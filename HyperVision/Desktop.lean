@@ -41,11 +41,25 @@ def modalActive (d : Desktop α) : Bool := d.top?.any (·.modal)
 def freeNumber (d : Desktop α) : Option Nat :=
   (List.range' 1 9).find? fun n => !d.windows.any (·.number == some n)
 
+/-- Constrains a window origin: never above the desktop, and at least one column visible. -/
+def constrain (d : Desktop α) (s : Size) (p : Point) : Point :=
+  let l := d.bounds
+  ⟨clampInt p.x (l.x - s.w + 1) (l.right - 1), clampInt p.y l.y (l.bottom - 1)⟩
+
+/-- The bounds a window with minimum size `minSize` actually gets when asked for `r`
+(Turbo Vision's `moveGrow`): the size is kept between the minimum size and the desktop
+size, and the origin is constrained so part of the title bar stays on the desktop. -/
+def place (d : Desktop α) (minSize : Size) (r : Rect) : Rect :=
+  let s : Size := ⟨max minSize.w (min r.w d.bounds.w), max minSize.h (min r.h d.bounds.h)⟩
+  let p := d.constrain s r.origin
+  ⟨p.x, p.y, s.w, s.h⟩
+
 /-- Adds a window in front and returns its id. Plain windows get a free number. -/
 def insert' (d : Desktop α) (w : Window α) : Desktop α × Nat :=
   let number := if w.isDialog || w.number.isSome then w.number else d.freeNumber
+  let bounds := d.place w.minSize w.bounds
   -- As in `TWindow`'s constructor, un-zooming restores the initial bounds.
-  let w := { w with id := d.nextId, number, zoomRect := w.zoomRect <|> some w.bounds }.initFocus
+  let w := { w with id := d.nextId, number, bounds, zoomRect := w.zoomRect <|> some bounds }.initFocus
   ({ d with windows := d.windows.push w, nextId := d.nextId + 1 }, w.id)
 
 def insert (d : Desktop α) (w : Window α) : Desktop α := (d.insert' w).1
@@ -86,28 +100,25 @@ def selectNumber (d : Desktop α) (n : Nat) : Desktop α :=
   | some w => d.raise w.id
   | none => d
 
-/-- Constrains a window origin: never above the desktop, and at least one column visible. -/
-def constrain (d : Desktop α) (s : Size) (p : Point) : Point :=
-  let l := d.bounds
-  ⟨clampInt p.x (l.x - s.w + 1) (l.right - 1), clampInt p.y l.y (l.bottom - 1)⟩
-
 def moveTo (d : Desktop α) (id : Nat) (p : Point) : Desktop α :=
   d.modify id fun w =>
     let p := d.constrain w.size p
     { w with bounds := { w.bounds with x := p.x, y := p.y } }
 
-/-- Resizes a window keeping its origin, within its minimum size and the desktop size. -/
+/-- Gives a window new bounds, as far as its minimum size and the desktop allow (see `place`). -/
+def locate (d : Desktop α) (id : Nat) (r : Rect) : Desktop α :=
+  d.modify id fun w => w.setBounds (d.place w.minSize r)
+
+/-- Resizes a window keeping its origin, within its minimum size and the desktop size
+(the origin moves only if the title bar would otherwise leave the desktop). -/
 def resizeTo (d : Desktop α) (id : Nat) (s : Size) : Desktop α :=
-  d.modify id fun w =>
-    let wd := max w.minSize.w (min s.w d.bounds.w)
-    let ht := max w.minSize.h (min s.h d.bounds.h)
-    w.setBounds { w.bounds with w := wd, h := ht }
+  d.modify id fun w => w.setBounds (d.place w.minSize { w.bounds with w := s.w, h := s.h })
 
 /-- Zooms a window to the whole desktop, or restores it if it already has that size. -/
 def toggleZoom (d : Desktop α) (id : Nat) : Desktop α :=
   d.modify id fun w =>
     if !w.flags.zoom then w
-    else if w.isMaximized d.bounds then (w.zoomRect.map w.setBounds).getD w
+    else if w.isMaximized d.bounds then (w.zoomRect.map fun r => w.setBounds (d.place w.minSize r)).getD w
     else { w.setBounds d.bounds with zoomRect := some w.bounds }
 
 private def tileable (w : Window α) : Bool := !w.isDialog && !w.modal
@@ -125,7 +136,7 @@ private def dividerLoc (lo : Int) (len num pos : Nat) : Int := lo + (len * pos /
 (Turbo Vision refuses such a layout with `tileError`). -/
 def arrange (d : Desktop α) (layout : Array (Window α × Rect)) : Desktop α :=
   if layout.any fun (w, r) => r.w < w.minSize.w || r.h < w.minSize.h then d
-  else layout.foldl (fun d (w, r) => d.modify w.id (·.setBounds r)) d
+  else layout.foldl (fun d (w, r) => d.locate w.id r) d
 
 /-- Tiles the plain windows over the desktop, front-most at the bottom-right. -/
 def tile (d : Desktop α) : Desktop α :=

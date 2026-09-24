@@ -288,8 +288,9 @@ def popupKey (p : Popup) (k : KeyEvent) : AppM α Bool := do
 def popupMouse (p : Popup) (m : MouseEvent) : AppM α Unit := do
   let set (p : Popup) : AppM α Unit := modify fun s => { s with popup := some p }
   match m.action with
-  | .wheelUp => set { p with top := p.top - 1 }
-  | .wheelDown => set { p with top := min (p.top + 1) (p.items.size - p.listHeight) }
+  -- The list's scroll bar tracks the highlight, so the wheel moves the highlight.
+  | .wheelUp => set (p.moveBy (-1))
+  | .wheelDown => set (p.moveBy 1)
   | .press | .drag | .release =>
     if !p.rect.contains m.pos then
       if m.action == .press then modify fun s => { s with popup := none }
@@ -313,6 +314,19 @@ def popupMouse (p : Popup) (m : MouseEvent) : AppM α Unit := do
             set (p.moveBy delta)
   | _ => pure ()
 
+/-! ### Mouse capture -/
+
+private def setDragging (id : Nat) (b : Bool) : AppM α Unit :=
+  modifyDesktop (·.modify id fun w => { w with dragging := b })
+
+/-- Ends a mouse capture whose release never arrived, resetting what it left pressed. -/
+def dropCapture : AppM α Unit := do
+  match (← get).capture with
+  | .move id _ | .resize id _ => setDragging id false
+  | .control id i => modifyDesktop (·.modify id (·.cancelMouse i))
+  | _ => pure ()
+  modify fun s => { s with capture := .none, statusPressed := none }
+
 /-! ### Keyboard -/
 
 /-- Keyboard move/resize (`Ctrl-F5`): arrows move, `Shift`+arrows resize, `Ctrl` moves
@@ -331,7 +345,7 @@ def keyDragKey (id : Nat) (orig : Rect) (k : KeyEvent) : AppM α Unit := do
   match k.key, delta with
   | .enter, _ => finish
   | .escape, _ =>
-    modifyDesktop (·.modify id fun w => w.setBounds orig)
+    modifyDesktop (·.locate id orig)
     finish
   | _, some dp =>
     if k.mods.shift then
@@ -343,6 +357,8 @@ def keyDragKey (id : Nat) (orig : Rect) (k : KeyEvent) : AppM α Unit := do
 
 def handleKey (k : KeyEvent) : AppM α Unit := do
   let app ← read
+  -- A key press ends a mouse interaction (as if the button had been released there).
+  if (← get).capture != .none then dropCapture
   let st ← get
   if let some (id, orig) := st.keyDrag then return (← keyDragKey id orig k)
   -- As in Turbo Vision, the status line sees every key first, so its bindings
@@ -375,9 +391,6 @@ def handleKey (k : KeyEvent) : AppM α Unit := do
   else if let some w := st.desktop.top? then withWindow w.id (·.handleKey k)
 
 /-! ### Mouse -/
-
-private def setDragging (id : Nat) (b : Bool) : AppM α Unit :=
-  modifyDesktop (·.modify id fun w => { w with dragging := b })
 
 /-- Continues a captured mouse interaction (drag or release). -/
 def captured (c : Capture) (m : MouseEvent) : AppM α Unit := do
@@ -417,14 +430,6 @@ def captured (c : Capture) (m : MouseEvent) : AppM α Unit := do
       if over then
         if let some item := (← read).statusLine[i]? then dispatch item.cmd
   if release then modify fun s => { s with capture := .none }
-
-/-- Ends a mouse capture whose release never arrived, resetting what it left pressed. -/
-def dropCapture : AppM α Unit := do
-  match (← get).capture with
-  | .move id _ | .resize id _ => setDragging id false
-  | .control id i => modifyDesktop (·.modify id (·.cancelMouse i))
-  | _ => pure ()
-  modify fun s => { s with capture := .none, statusPressed := none }
 
 /-- Leaves keyboard move/resize mode, keeping the window where it is. -/
 def endKeyDrag : AppM α Unit := do
@@ -485,6 +490,8 @@ def handleMouse (m : MouseEvent) : AppM α Unit := do
   if st.capture != .none then
     -- A press, or motion with no button held, means the release was lost.
     if m.action == .press || m.action == .move then dropCapture
+    -- As in Turbo Vision's mouse tracking, the wheel is ignored while the button is held.
+    else if m.action == .wheelUp || m.action == .wheelDown then return
     else return (← captured st.capture m)
   if m.action == .press then endKeyDrag
   let modal := st.desktop.modalActive
@@ -512,11 +519,22 @@ def handleEvent : Event → AppM α Unit
   | .key k => handleKey k
   | .mouse m => handleMouse m
   | .resize w h => do
+    dropCapture
     let s : Size := ⟨w, h⟩
-    modify fun st => { st with screen := s, menu := none, popup := none, capture := .none }
+    modify fun st => { st with screen := s, menu := none, popup := none }
     modifyDesktop (·.setBounds (desktopRect s))
 
 /-! ### Drawing -/
+
+/-- The desktop layer: the background pattern, then every window with its drop
+shadow in z-order (back to front), all clipped to the desktop area `desk`. -/
+def drawDesktop (t : Theme) (d : Desktop α) (desk : Rect) : DrawM Unit := do
+  Draw.fill desk t.backgroundChar t.background
+  Draw.clip desk do
+    for h : i in [0:d.windows.size] do
+      let w := d.windows[i]
+      Draw.shadow w.bounds t.shadow t.shadowOnBlack
+      Draw.within w.bounds (w.draw t (i + 1 == d.windows.size) (w.isMaximized desk))
 
 /-- The DOS mouse cursor: the cell's attribute XOR `0x77`. -/
 def invertAttr (a : Attr) : Attr := Attr.ofByte (a.toByte ^^^ 0x77)
@@ -529,12 +547,7 @@ def render : AppM α (Screen × Option Point) := do
   let desk := desktopRect s
   let d := st.desktop
   let screen := Draw.run (Screen.new s.w s.h) do
-    Draw.fill desk t.backgroundChar t.background
-    Draw.clip desk do
-      for h : i in [0:d.windows.size] do
-        let w := d.windows[i]
-        Draw.shadow w.bounds t.shadow t.shadowOnBlack
-        Draw.within w.bounds (w.draw t (i + 1 == d.windows.size) (w.isMaximized desk))
+    drawDesktop t d desk
     MenuBar.drawBar app.menuBar st.menu t.menu s.w
     StatusLine.draw app.statusLine app.statusHint st.statusPressed t.statusLine (s.h - 1 : Nat) s.w
     if let some track := st.menu then

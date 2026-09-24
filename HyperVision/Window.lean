@@ -12,7 +12,7 @@ namespace HyperVision
 
 inductive WindowStyle where
   | blue | cyan | gray | dialog
-deriving BEq, DecidableEq, Repr, Inhabited
+deriving DecidableEq, Repr, Inhabited
 
 def WindowStyle.colors (t : Theme) : WindowStyle → WindowColors
   | .blue => t.blueWindow
@@ -119,9 +119,7 @@ def focusNext (w : Window α) (forward : Bool := true) : Window α :=
   let n := w.controls.size
   if n == 0 then w else
   let start := w.focus.getD (if forward then n - 1 else 0)
-  let candidates := (List.range n).map fun k =>
-    if forward then (start + 1 + k) % n else (start + n - 1 - k) % n
-  match candidates.find? w.focusable with
+  match (cyclicOrder n start forward).find? w.focusable with
   | some i => w.setFocus i
   | none => w
 
@@ -250,7 +248,8 @@ def applyReply (w : Window α) (i : Nat) (r : Reply) : Window α × WindowReply 
     let origin := (w.controls[i]?.map (w.boundsOf · |>.origin)).getD Point.origin
     (w, .dropDown i (anchor.translate (origin + ⟨1, 1⟩)) items current)
 
-private def updateKind (w : Window α) (i : Nat) (k : ControlKind α) : Window α :=
+/-- Replaces the kind (widget state) of control `i`. -/
+def updateKind (w : Window α) (i : Nat) (k : ControlKind α) : Window α :=
   { w with controls := w.controls.modify i fun c => { c with kind := k } }
 
 /-- Offers a hot key to every control, in order. -/
@@ -266,31 +265,37 @@ def defaultCommand? (w : Window α) : Option (Command α) :=
     | .button b => if b.isDefault && b.enabled then some b.command else none
     | _ => none
 
+/-- Offers a key to the focused control. -/
+def keyToFocus (w : Window α) (k : KeyEvent) : Window α × WindowReply α :=
+  match w.focus, w.focused? with
+  | some i, some c =>
+    let (kind, r) := c.kind.handleKey (w.sizeOf c) k
+    (updateKind w i kind).applyReply i r
+  | _, _ => (w, .ignored)
+
+/-- What the window itself does with a key the focused control ignored: hot keys,
+`Tab`/`Shift-Tab`, the default button on `Enter`, and `Esc` in dialogs. -/
+def keyFallback (w : Window α) (k : KeyEvent) : Window α × WindowReply α :=
+  let focusTakesText := w.focused?.any (·.kind.wantsText)
+  let hot : Option Char := match k.key with
+    | .char c =>
+      if k.mods.alt && !k.mods.ctrl then some c.toLower
+      else if k.mods.isNone && !focusTakesText then some c.toLower
+      else none
+    | _ => none
+  match k.key, hot >>= w.dispatchHotkey with
+  | _, some res => res
+  | .tab, none => (w.focusNext !k.mods.shift, .handled)
+  | .enter, none =>
+    match w.defaultCommand? with
+    | some cmd => (w, .command cmd)
+    | none => (w, .ignored)
+  | .escape, none => if w.isDialog then (w, .command .cancel) else (w, .ignored)
+  | _, none => (w, .ignored)
+
 def handleKey (w : Window α) (k : KeyEvent) : Window α × WindowReply α :=
-  let fromFocus : Window α × WindowReply α :=
-    match w.focus, w.focused? with
-    | some i, some c =>
-      let (kind, r) := c.kind.handleKey (w.sizeOf c) k
-      (updateKind w i kind).applyReply i r
-    | _, _ => (w, .ignored)
-  match fromFocus with
-  | (w, .ignored) =>
-    let focusTakesText := w.focused?.any (·.kind.wantsText)
-    let hot : Option Char := match k.key with
-      | .char c =>
-        if k.mods.alt && !k.mods.ctrl then some c.toLower
-        else if k.mods.isNone && !focusTakesText then some c.toLower
-        else none
-      | _ => none
-    match k.key, hot >>= w.dispatchHotkey with
-    | _, some res => res
-    | .tab, none => (w.focusNext !k.mods.shift, .handled)
-    | .enter, none =>
-      match w.defaultCommand? with
-      | some cmd => (w, .command cmd)
-      | none => (w, .ignored)
-    | .escape, none => if w.isDialog then (w, .command .cancel) else (w, .ignored)
-    | _, none => (w, .ignored)
+  match w.keyToFocus k with
+  | (w, .ignored) => w.keyFallback k
   | res => res
 
 /-- Classifies a left-button press at window coordinates `p`. -/

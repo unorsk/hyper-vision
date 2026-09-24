@@ -81,26 +81,31 @@ def toggle (cb : CheckBoxes) (i : Nat) : CheckBoxes :=
 
 def values (cb : CheckBoxes) : Array Bool := cb.items.map (·.2)
 
+def handleKey (cb : CheckBoxes) (s : Size) (k : KeyEvent) : CheckBoxes × Reply :=
+  if !k.mods.isNone && !(k.mods == { shift := true }) then (cb, .ignored) else
+  match Cluster.navigate cb.items.size s.h cb.cursor k.key with
+  | some i => ({ cb with cursor := i }, .handled)
+  | none =>
+    if k.key == .char ' ' then (cb.toggle cb.cursor, .handled)
+    else match k.text? >>= fun ch => Cluster.hotkeyIndex? cb.labels ch.toLower with
+      | some i => (cb.toggle i, .handled)
+      | none => (cb, .ignored)
+
+/-- A click toggles an item when pressed and released on it. -/
+def handleMouse (cb : CheckBoxes) (s : Size) (m : MouseEvent) : CheckBoxes × Reply :=
+  match m.action, Cluster.itemAt? cb.labels s.h m.pos with
+  | .press, some i => ({ cb with cursor := i }, .handled)
+  | .release, some i => if i == cb.cursor then (cb.toggle i, .handled) else (cb, .handled)
+  | _, _ => (cb, .handled)
+
 end CheckBoxes
 
 instance : Widget CheckBoxes where
   draw cb ctx :=
     Cluster.draw cb.labels " [ ] " (fun i => if (cb.items[i]?.map (·.2)).getD false then 'X' else ' ')
       cb.cursor ctx
-  handleKey cb s k :=
-    if !k.mods.isNone && !(k.mods == { shift := true }) then (cb, .ignored) else
-    match Cluster.navigate cb.items.size s.h cb.cursor k.key with
-    | some i => ({ cb with cursor := i }, .handled)
-    | none =>
-      if k.key == .char ' ' then (cb.toggle cb.cursor, .handled)
-      else match k.text? >>= fun ch => Cluster.hotkeyIndex? cb.labels ch.toLower with
-        | some i => (cb.toggle i, .handled)
-        | none => (cb, .ignored)
-  handleMouse cb s m :=
-    match m.action, Cluster.itemAt? cb.labels s.h m.pos with
-    | .press, some i => ({ cb with cursor := i }, .handled)
-    | .release, some i => if i == cb.cursor then (cb.toggle i, .handled) else (cb, .handled)
-    | _, _ => (cb, .handled)
+  handleKey := CheckBoxes.handleKey
+  handleMouse := CheckBoxes.handleMouse
   hotkey cb c := (Cluster.hotkeyIndex? cb.labels c).map fun i => (cb.toggle i, .handled)
   cursor? cb s := some (Cluster.cursorPos cb.labels s.h cb.cursor)
 
@@ -110,22 +115,30 @@ structure RadioButtons where
   selected : Nat := 0
 deriving Inhabited
 
+namespace RadioButtons
+
+def handleKey (rb : RadioButtons) (s : Size) (k : KeyEvent) : RadioButtons × Reply :=
+  if !k.mods.isNone && !(k.mods == { shift := true }) then (rb, .ignored) else
+  match Cluster.navigate rb.items.size s.h rb.selected k.key with
+  | some i => ({ rb with selected := i }, .handled)
+  | none =>
+    if k.key == .char ' ' then (rb, .handled)
+    else match k.text? >>= fun ch => Cluster.hotkeyIndex? rb.items ch.toLower with
+      | some i => ({ rb with selected := i }, .handled)
+      | none => (rb, .ignored)
+
+def handleMouse (rb : RadioButtons) (s : Size) (m : MouseEvent) : RadioButtons × Reply :=
+  match m.action, Cluster.itemAt? rb.items s.h m.pos with
+  | .press, some i => ({ rb with selected := i }, .handled)
+  | _, _ => (rb, .handled)
+
+end RadioButtons
+
 instance : Widget RadioButtons where
   draw rb ctx :=
     Cluster.draw rb.items " ( ) " (fun i => if i == rb.selected then '•' else ' ') rb.selected ctx
-  handleKey rb s k :=
-    if !k.mods.isNone && !(k.mods == { shift := true }) then (rb, .ignored) else
-    match Cluster.navigate rb.items.size s.h rb.selected k.key with
-    | some i => ({ rb with selected := i }, .handled)
-    | none =>
-      if k.key == .char ' ' then (rb, .handled)
-      else match k.text? >>= fun ch => Cluster.hotkeyIndex? rb.items ch.toLower with
-        | some i => ({ rb with selected := i }, .handled)
-        | none => (rb, .ignored)
-  handleMouse rb s m :=
-    match m.action, Cluster.itemAt? rb.items s.h m.pos with
-    | .press, some i => ({ rb with selected := i }, .handled)
-    | _, _ => (rb, .handled)
+  handleKey := RadioButtons.handleKey
+  handleMouse := RadioButtons.handleMouse
   hotkey rb c := (Cluster.hotkeyIndex? rb.items c).map fun i => ({ rb with selected := i }, .handled)
   cursor? rb s := some (Cluster.cursorPos rb.items s.h rb.selected)
 

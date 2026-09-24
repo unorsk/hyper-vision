@@ -167,8 +167,7 @@ def firstItem (items : Array (MenuItem α)) : Nat :=
 def step (items : Array (MenuItem α)) (i : Nat) (forward : Bool) : Nat :=
   let n := items.size
   if n == 0 then 0 else
-  let cands := (List.range n).map fun k => if forward then (i + 1 + k) % n else (i + n - 1 - k) % n
-  (cands.find? fun j => !((items[j]?.map (·.isSeparator)).getD true)).getD i
+  ((cyclicOrder n i forward).find? fun j => !((items[j]?.map (·.isSeparator)).getD true)).getD i
 
 /-- Every command reachable from an item, with its shortcut and enabled state. -/
 def itemShortcuts : MenuItem α → Array (KeyEvent × Command α × Bool)

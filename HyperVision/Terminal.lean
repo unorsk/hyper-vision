@@ -79,36 +79,88 @@ def printable (c : Char) : Char :=
   let n := c.toNat
   if n < 0x20 || (0x7F ≤ n && n < 0xA0) then ' ' else c
 
+/-- How far the terminal cursor advances after printing `c`. -/
+def charAdvance (c : Char) : Nat := if isZeroWidth c then 0 else if isWide c then 2 else 1
+
+/-- What the terminal displays for a cell: control characters become blanks. -/
+def Cell.shown (c : Cell) : Cell := { c with ch := printable c.ch }
+
+/-- An abstract terminal update. -/
+inductive Op where
+  /-- Reset the attribute and blank the screen (`ESC[0m ESC[2J`). -/
+  | reset
+  /-- Move the cursor to column `x`, row `y` (0-based). -/
+  | moveTo (x y : Nat)
+  /-- Select the attribute for subsequent characters. -/
+  | setAttr (a : Attr)
+  /-- Print a character at the cursor and advance it. -/
+  | put (c : Char)
+deriving DecidableEq, Repr, Inhabited
+
+/-- The diff's knowledge of the terminal while it emits operations. -/
+structure DiffState where
+  ops : Array Op
+  /-- The cursor position, when known. -/
+  pos : Option (Nat × Nat)
+  /-- The current attribute, when known. -/
+  attr : Option Attr
+
+/-- Row-major list of all positions of a `w × h` screen. -/
+def positions (w h : Nat) : List (Nat × Nat) :=
+  (List.range h).flatMap fun y => (List.range w).map fun x => (x, y)
+
+/-- Whether the cell at `(x, y)` is unchanged since `prev` (never, in a full repaint). -/
+def unchanged (prev : Option Screen) (full : Bool) (x y : Nat) (c : Cell) : Bool :=
+  !full && (prev.bind (·.get? x y)) == some c
+
+/-- Emits the operations for one cell: position and attribute only when unknown or different. -/
+def diffCell (prev : Option Screen) (next : Screen) (full : Bool) (st : DiffState)
+    (p : Nat × Nat) : DiffState :=
+  match next.get? p.1 p.2 with
+  | none => st
+  | some c =>
+    if unchanged prev full p.1 p.2 c then st
+    else
+      let ops := if st.pos != some p then st.ops.push (.moveTo p.1 p.2) else st.ops
+      let ops := if st.attr != some c.attr then ops.push (.setAttr c.attr) else ops
+      let ch := printable c.ch
+      -- After a wide or zero-width character the cursor position is not trusted.
+      { ops := ops.push (.put ch)
+        pos := if charAdvance ch == 1 then some (p.1 + 1, p.2) else none
+        attr := some c.attr }
+
+/-- Whether the screen must be repainted from scratch. -/
+def needsFull (prev : Option Screen) (next : Screen) : Bool :=
+  match prev with
+  | some p => p.width != next.width || p.height != next.height
+  | none => true
+
 /--
-Encodes the changes from `prev` to `next`. A missing or differently sized `prev`
-forces a full repaint. The hardware cursor is shown at `cursor`, if given.
+The operations that turn a terminal showing `prev` into one showing `next`. A missing
+or differently sized `prev` forces a full repaint. See `diffOps_correct`.
+-/
+def diffOps (prev : Option Screen) (next : Screen) : Array Op :=
+  let full := needsFull prev next
+  let init : DiffState := { ops := if full then #[.reset] else #[], pos := none, attr := none }
+  ((positions next.width next.height).foldl (diffCell prev next full) init).ops
+
+/-- The escape sequence for an operation. -/
+def Op.encode (mode : ColorMode) : Op → String
+  | .reset => esc "0m" ++ esc "2J"
+  | .moveTo x y => esc s!"{y + 1};{x + 1}H"
+  | .setAttr a => sgr mode a
+  | .put c => String.singleton c
+
+/--
+Encodes the changes from `prev` to `next`, hiding the cursor while drawing and
+showing it at `cursor` afterwards, if given.
 -/
 def diff (mode : ColorMode) (prev : Option Screen) (next : Screen) (cursor : Option Point) :
-    String := Id.run do
-  let full := match prev with
-    | some p => p.width != next.width || p.height != next.height
-    | none => true
-  let mut out := esc "?25l"
-  if full then out := out ++ esc "0m" ++ esc "2J"
-  let mut attr : Option Attr := none
-  let mut pos : Option (Nat × Nat) := none
-  for y in [0:next.height] do
-    for x in [0:next.width] do
-      let some c := next.get? x y | continue
-      let same := !full && (prev.bind (·.get? x y)) == some c
-      unless same do
-        if pos != some (x, y) then out := out ++ esc s!"{y + 1};{x + 1}H"
-        if attr != some c.attr then
-          out := out ++ sgr mode c.attr
-          attr := some c.attr
-        let ch := printable c.ch
-        out := out.push ch
-        -- The terminal's idea of the cursor is unknown after a wide or zero-width
-        -- character, so the next cell is positioned explicitly.
-        pos := if isWide ch || isZeroWidth ch then none else some (x + 1, y)
-  if let some p := cursor then
-    out := out ++ esc s!"{p.y + 1};{p.x + 1}H" ++ esc "?25h"
-  return out
+    String :=
+  let body := (diffOps prev next).foldl (fun out op => out ++ op.encode mode) (esc "?25l")
+  match cursor with
+  | some p => body ++ esc s!"{p.y + 1};{p.x + 1}H" ++ esc "?25h"
+  | none => body
 
 /-- Alternate screen, no autowrap, hidden cursor, SGR mouse reporting. -/
 def enterSequence (anyMotion : Bool) : String :=

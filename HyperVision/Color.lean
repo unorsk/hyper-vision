@@ -12,7 +12,7 @@ namespace HyperVision
 inductive Color where
   | black | blue | green | cyan | red | magenta | brown | lightGray
   | darkGray | lightBlue | lightGreen | lightCyan | lightRed | lightMagenta | yellow | white
-deriving BEq, DecidableEq, Repr, Inhabited, Hashable
+deriving DecidableEq, Repr, Inhabited, Hashable
 
 namespace Color
 
@@ -71,7 +71,7 @@ end Color
 structure Attr where
   fg : Color
   bg : Color
-deriving BEq, DecidableEq, Repr, Inhabited, Hashable
+deriving DecidableEq, Repr, Inhabited, Hashable
 
 namespace Attr
 

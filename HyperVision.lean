@@ -19,3 +19,11 @@ import HyperVision.Menu
 import HyperVision.Desktop
 import HyperVision.App
 import HyperVision.Dialogs
+import HyperVision.Proofs.Draw
+import HyperVision.Proofs.App
+import HyperVision.Proofs.Render
+import HyperVision.Proofs.Desktop
+import HyperVision.Proofs.Widgets
+import HyperVision.Proofs.Window
+import HyperVision.Proofs.Menu
+import HyperVision.Proofs.Input

@@ -16,7 +16,7 @@ namespace HyperVision
 structure Size where
   w : Nat
   h : Nat
-deriving BEq, DecidableEq, Repr, Inhabited
+deriving DecidableEq, Repr, Inhabited
 
 /--
 Commands flow from buttons, menus and the status line to the application.
