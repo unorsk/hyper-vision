@@ -4,7 +4,9 @@ open System Lake DSL
 package «hyper-vision» where
   version := v!"0.1.0"
   leanOptions := #[⟨`autoImplicit, false⟩]
-  testDriver := "HyperVisionTests"
+  testDriver := "tests"
+
+require plausible from git "https://github.com/leanprover-community/plausible" @ "v4.34.0"
 
 input_file hv_term.c where
   path := "c" / "hv_term.c"
@@ -23,9 +25,14 @@ target libhvterm pkg : FilePath := do
 lean_lib HyperVision where
   moreLinkObjs := #[libhvterm]
 
-/-- Compile-time `#guard` checks; run with `lake test`. -/
+/-- Unit and property tests (checked at compile time) and the application fuzzer. -/
 lean_lib HyperVisionTests
+
+/-- `lake test [-- seed sessions length]`: builds the tests, then fuzzes the application. -/
+lean_exe tests where
+  root := `HyperVisionTests.Main
 
 @[default_target]
 lean_exe «hyper-vision-demo» where
   root := `Main
+
