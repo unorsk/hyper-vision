@@ -22,3 +22,4 @@ import HyperVision.Dialogs
 import HyperVision.Proofs.Draw
 import HyperVision.Proofs.App
 import HyperVision.Proofs.Render
+import HyperVision.Proofs.Desktop
