@@ -51,7 +51,7 @@ theorem utf8Char_append {b : UInt8} {rest y r : List UInt8} {ev : Option Event}
       obtain ⟨rfl, rfl⟩ := h
       have hle : utf8Length b - 1 ≤ rest.length := by omega
       simp only [List.length_append, show ¬ (rest.length + y.length < utf8Length b - 1) by omega,
-        decide_false, ite_false, List.take_append_of_le_length hle, List.drop_append_of_le_length hle]
+        ite_false, List.take_append_of_le_length hle, List.drop_append_of_le_length hle]
 
 theorem decodeText_append {x y r : List UInt8} {ev : Option Event}
     (h : decodeText false x = some (ev, r)) : decodeText false (x ++ y) = some (ev, r ++ y) := by

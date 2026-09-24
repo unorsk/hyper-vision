@@ -29,8 +29,7 @@ theorem itemX_eq (menus : Array (Menu α)) (i : Nat) :
 theorem itemX_succ (menus : Array (Menu α)) {j : Nat} (hj : j < menus.size) :
     itemX menus (j + 1) = itemX menus j + titleWidth menus j + 2 := by
   rw [itemX_eq, itemX_eq, List.take_add_one, List.foldl_append]
-  have : menus.toList[j]? = some menus[j] := by simp [hj]
-  simp [this, titleWidth, hj]
+  simp [titleWidth, hj]
   omega
 
 /-- Titles are laid out left to right without overlap. -/

@@ -8,8 +8,10 @@ import HyperVision.Desktop
 * Inserting or raising a window makes it the active (front) window; closing removes
   exactly the windows with that id.
 * `next` and `prev` (F6 / Shift-F6) are inverse to each other.
-* Moving a window can never lose it: some cell of its title bar stays on the
-  desktop, so it can always be grabbed again.
+* **No window can be lost**: every operation (inserting, moving, resizing, zooming,
+  tiling, cascading, restacking, closing) keeps some cell of every title bar on the
+  desktop, so every window can always be grabbed again; resizing the desktop
+  re-establishes this for all windows.
 * Resizing respects the minimum size and the desktop size; zooming twice restores
   the original bounds.
 -/
@@ -24,6 +26,14 @@ variable {α : Type}
   unfold setFocus; split <;> rfl
 
 @[simp] theorem id_initFocus (w : Window α) : w.initFocus.id = w.id := by
+  unfold initFocus; split
+  · rfl
+  · split <;> simp
+
+@[simp] theorem bounds_setFocus (w : Window α) (i : Nat) : (w.setFocus i).bounds = w.bounds := by
+  unfold setFocus; split <;> rfl
+
+@[simp] theorem bounds_initFocus (w : Window α) : w.initFocus.bounds = w.bounds := by
   unfold initFocus; split
   · rfl
   · split <;> simp
@@ -230,11 +240,11 @@ theorem WF.arrange {d : Desktop α} (h : d.WF) (layout : Array (Window α × Rec
   · exact h
   · have := Array.foldl_induction (as := layout) (init := d)
       (motive := fun _ d' => d'.ids = d.ids ∧ d'.nextId = d.nextId) ⟨rfl, rfl⟩
-      (f := fun d (w, r) => d.modify w.id (·.setBounds r)) fun i d' ⟨h₁, h₂⟩ => by
+      (f := fun d (w, r) => d.locate w.id r) fun i d' ⟨h₁, h₂⟩ => by
         split
         rename_i w r _
-        exact ⟨by rw [ids_modify d' w.id (fun x => x.setBounds r) fun _ => rfl, h₁],
-          by rw [nextId_modify, h₂]⟩
+        exact ⟨by rw [locate, ids_modify d' w.id (fun x => x.setBounds (d'.place x.minSize r)) fun _ => rfl, h₁],
+          by rw [locate, nextId_modify, h₂]⟩
     exact ⟨this.1 ▸ h.nodup, this.1 ▸ this.2 ▸ h.lt⟩
 
 theorem WF.tile {d : Desktop α} (h : d.WF) : d.tile.WF := by
@@ -363,13 +373,28 @@ theorem resizeTo_size {d : Desktop α} (h : d.WF) (i : Nat) (s : Size) :
       (w.minSize.h ≤ d.bounds.h → w.bounds.h ≤ d.bounds.h) := by
   intro w hw hid
   obtain ⟨w₀, -, -, rfl⟩ := mem_modify h hw hid
-  simp only [Window.setBounds]
+  simp only [Window.setBounds, place]
   omega
 
-/-- Zooming a window that is not maximized, then zooming again, restores its bounds. -/
+/-- Bounds that already respect the size limits and keep part of the title bar on the
+desktop are placed unchanged. -/
+theorem place_eq_self {d : Desktop α} {m : Size} {r : Rect} (hw : m.w ≤ r.w) (hh : m.h ≤ r.h)
+    (hdw : r.w ≤ d.bounds.w) (hdh : r.h ≤ d.bounds.h)
+    (hx : d.bounds.x - r.w + 1 ≤ r.x ∧ r.x ≤ d.bounds.right - 1)
+    (hy : d.bounds.y ≤ r.y ∧ r.y ≤ d.bounds.bottom - 1) : d.place m r = r := by
+  simp only [place, constrain, clampInt, Rect.origin]
+  rcases r with ⟨x, y, w, h⟩
+  simp only at *
+  have e₁ : max m.w (min w d.bounds.w) = w := by omega
+  have e₂ : max m.h (min h d.bounds.h) = h := by omega
+  rw [e₁, e₂]
+  congr 1 <;> omega
+
+/-- Zooming a window that is not maximized, then zooming again, restores its bounds
+(when they are valid bounds for it, as those of every window placed by the desktop are). -/
 theorem toggleZoom_twice {d : Desktop α} (h : d.WF) {i : Nat} {w₀ : Window α}
     (hw₀ : w₀ ∈ d.windows) (hid : w₀.id = i) (hz : w₀.flags.zoom = true)
-    (hmax : w₀.isMaximized d.bounds = false) :
+    (hmax : w₀.isMaximized d.bounds = false) (hfit : d.place w₀.minSize w₀.bounds = w₀.bounds) :
     ∀ w ∈ ((d.toggleZoom i).toggleZoom i).windows, w.id = i → w.bounds = w₀.bounds := by
   intro w hw hwid
   have h₁ := h.toggleZoom i
@@ -387,7 +412,204 @@ theorem toggleZoom_twice {d : Desktop α} (h : d.WF) {i : Nat} {w₀ : Window α
   subst this
   have hb : (d.toggleZoom i).bounds = d.bounds := bounds_modify ..
   simp only [hb, hz, hmax, Bool.not_true, Bool.false_eq_true, ite_false]
-  simp [Window.isMaximized, Window.setBounds, hz]
+  have hp : (d.toggleZoom i).place = d.place := by funext m r; simp only [place, constrain, hb]
+  simp [Window.isMaximized, Window.setBounds, hz, hp, hfit]
+
+/-! ### No window can be lost -/
+
+/-- Every window (of positive width) has part of its title bar on the desktop, so it can
+always be grabbed with the mouse. -/
+def Reachable (d : Desktop α) : Prop :=
+  ∀ w ∈ d.windows, 0 < w.bounds.w → TitleReachable d.bounds w
+
+theorem titleReachable_congr {desk : Rect} {w w' : Window α} (hb : w'.bounds = w.bounds) :
+    TitleReachable desk w' ↔ TitleReachable desk w := by
+  simp only [TitleReachable, hb]
+
+/-- A window whose origin is the `constrain`ed origin for its size is reachable. -/
+theorem titleReachable_constrain {d : Desktop α} (hdw : 0 < d.bounds.w) (hdh : 0 < d.bounds.h)
+    {w : Window α} {p : Point} (hx : w.bounds.x = (d.constrain ⟨w.bounds.w, w.bounds.h⟩ p).x)
+    (hy : w.bounds.y = (d.constrain ⟨w.bounds.w, w.bounds.h⟩ p).y) (hpos : 0 < w.bounds.w) :
+    TitleReachable d.bounds w := by
+  have hq : d.bounds.x - w.bounds.w + 1 ≤ (d.constrain ⟨w.bounds.w, w.bounds.h⟩ p).x ∧
+      (d.constrain ⟨w.bounds.w, w.bounds.h⟩ p).x ≤ d.bounds.right - 1 ∧
+      d.bounds.y ≤ (d.constrain ⟨w.bounds.w, w.bounds.h⟩ p).y ∧
+      (d.constrain ⟨w.bounds.w, w.bounds.h⟩ p).y ≤ d.bounds.bottom - 1 := by
+    simp only [constrain, clampInt, Rect.right, Rect.bottom]
+    omega
+  rw [← hx, ← hy] at hq
+  simp only [TitleReachable, Rect.contains_iff, Rect.right, Rect.bottom] at hq ⊢
+  exact ⟨max d.bounds.x w.bounds.x, by omega, by omega, by omega⟩
+
+/-- Bounds chosen by `place` keep part of the title bar on a non-empty desktop. -/
+theorem titleReachable_place {d : Desktop α} (hdw : 0 < d.bounds.w) (hdh : 0 < d.bounds.h)
+    {w : Window α} {m : Size} {r : Rect} (hb : w.bounds = d.place m r) (hpos : 0 < w.bounds.w) :
+    TitleReachable d.bounds w :=
+  titleReachable_constrain hdw hdh (p := r.origin) (by rw [hb]; rfl) (by rw [hb]; rfl) hpos
+
+theorem mem_modify_cases {d : Desktop α} {i : Nat} {f : Window α → Window α} {w : Window α}
+    (hw : w ∈ (d.modify i f).windows) : w ∈ d.windows ∨ ∃ w₀ ∈ d.windows, w = f w₀ := by
+  unfold modify at hw
+  split at hw
+  · obtain ⟨k, hk, rfl⟩ := Array.mem_iff_getElem.1 hw
+    have hk' : k < d.windows.size := by simpa using hk
+    rw [Array.getElem_modify]
+    split
+    · exact .inr ⟨_, Array.getElem_mem hk', rfl⟩
+    · exact .inl (Array.getElem_mem hk')
+  · exact .inl hw
+
+theorem Reachable.modify {d : Desktop α} (h : d.Reachable) (i : Nat) {f : Window α → Window α}
+    (hf : ∀ w ∈ d.windows, 0 < (f w).bounds.w → TitleReachable d.bounds (f w)) :
+    (d.modify i f).Reachable := by
+  intro w hw hpos
+  rw [bounds_modify]
+  rcases mem_modify_cases hw with hw | ⟨w₀, hw₀, rfl⟩
+  · exact h w hw hpos
+  · exact hf w₀ hw₀ hpos
+
+/-- Changing a window without changing its bounds (its controls, focus, flags, …). -/
+theorem Reachable.modify_of_bounds {d : Desktop α} (h : d.Reachable) (i : Nat)
+    {f : Window α → Window α} (hf : ∀ w, (f w).bounds = w.bounds) : (d.modify i f).Reachable :=
+  h.modify i fun w hw hpos => (titleReachable_congr (hf w)).2 (h w hw (hf w ▸ hpos))
+
+theorem Reachable.of_subset {d d' : Desktop α} (h : d.Reachable)
+    (hsub : ∀ w ∈ d'.windows, w ∈ d.windows) (hb : d'.bounds = d.bounds) : d'.Reachable :=
+  fun w hw hpos => hb ▸ h w (hsub w hw) hpos
+
+theorem Reachable.empty (r : Rect) : Reachable ({ bounds := r } : Desktop α) := by
+  intro w hw; simp at hw
+
+theorem Reachable.insert {d : Desktop α} (h : d.Reachable) (hdw : 0 < d.bounds.w)
+    (hdh : 0 < d.bounds.h) (w : Window α) : (d.insert w).Reachable := by
+  intro w' hw' hpos
+  simp only [Desktop.insert, Desktop.insert', Array.mem_push] at hw' ⊢
+  rcases hw' with hw' | rfl
+  · exact h w' hw' hpos
+  · exact titleReachable_place hdw hdh (m := w.minSize) (r := w.bounds) (by simp) hpos
+
+theorem Reachable.insertCentered {d : Desktop α} (h : d.Reachable) (hdw : 0 < d.bounds.w)
+    (hdh : 0 < d.bounds.h) (w : Window α) : (d.insertCentered w).Reachable :=
+  h.insert hdw hdh _
+
+theorem Reachable.close {d : Desktop α} (h : d.Reachable) (i : Nat) : (d.close i).Reachable :=
+  h.of_subset (fun w hw => by simp only [Desktop.close, Array.mem_filter] at hw; exact hw.1) rfl
+
+theorem Reachable.raise {d : Desktop α} (h : d.Reachable) (i : Nat) : (d.raise i).Reachable := by
+  unfold Desktop.raise
+  split
+  · next w' hw' =>
+    refine h.of_subset (fun w hw => ?_) rfl
+    rcases Array.mem_push.1 hw with hw | rfl
+    · exact (Array.mem_filter.1 hw).1
+    · exact Array.mem_of_find?_eq_some hw'
+  · exact h
+
+theorem Reachable.next {d : Desktop α} (h : d.Reachable) : d.next.Reachable := by
+  unfold Desktop.next
+  split
+  · exact h
+  · split
+    · next w' hw' =>
+      refine h.of_subset (fun w hw => ?_) rfl
+      rcases Array.mem_push.1 hw with hw | rfl
+      · rw [← Array.mem_toList_iff, Array.toList_extract, List.extract_eq_take_drop] at hw
+        exact Array.mem_toList_iff.1 (List.mem_of_mem_drop (List.mem_of_mem_take hw))
+      · exact Array.mem_of_getElem? hw'
+    · exact h
+
+theorem Reachable.prev {d : Desktop α} (h : d.Reachable) : d.prev.Reachable := by
+  unfold Desktop.prev
+  split
+  · exact h
+  · split
+    · next w' hw' =>
+      obtain ⟨ys, hys⟩ := Array.back?_eq_some_iff.1 hw'
+      refine h.of_subset (fun w hw => ?_) rfl
+      simp only [hys, Array.pop_push, Array.mem_append, Array.mem_singleton] at hw
+      rw [hys, Array.mem_push]
+      exact hw.symm
+    · exact h
+
+theorem Reachable.selectNumber {d : Desktop α} (h : d.Reachable) (n : Nat) :
+    (d.selectNumber n).Reachable := by
+  unfold Desktop.selectNumber
+  split
+  · exact h
+  · split
+    · exact h.raise _
+    · exact h
+
+theorem Reachable.moveTo {d : Desktop α} (h : d.Reachable) (hdw : 0 < d.bounds.w)
+    (hdh : 0 < d.bounds.h) (i : Nat) (p : Point) : (d.moveTo i p).Reachable :=
+  h.modify i fun _ _ hpos => titleReachable_constrain hdw hdh (p := p) rfl rfl hpos
+
+theorem Reachable.locate {d : Desktop α} (h : d.Reachable) (hdw : 0 < d.bounds.w)
+    (hdh : 0 < d.bounds.h) (i : Nat) (r : Rect) : (d.locate i r).Reachable :=
+  h.modify i fun _ _ hpos => titleReachable_place hdw hdh rfl hpos
+
+theorem Reachable.resizeTo {d : Desktop α} (h : d.Reachable) (hdw : 0 < d.bounds.w)
+    (hdh : 0 < d.bounds.h) (i : Nat) (s : Size) : (d.resizeTo i s).Reachable :=
+  h.modify i fun _ _ hpos => titleReachable_place hdw hdh rfl hpos
+
+theorem Reachable.toggleZoom {d : Desktop α} (h : d.Reachable) (hdw : 0 < d.bounds.w)
+    (hdh : 0 < d.bounds.h) (i : Nat) : (d.toggleZoom i).Reachable := by
+  refine h.modify i fun w hw hpos => ?_
+  by_cases hz : w.flags.zoom = true
+  · by_cases hm : w.isMaximized d.bounds = true
+    · simp only [hz, hm, Bool.not_true, Bool.false_eq_true, ite_false, ite_true] at hpos ⊢
+      cases hr : w.zoomRect with
+      | none =>
+        simp only [hr, Option.map_none, Option.getD_none] at hpos ⊢
+        exact h w hw hpos
+      | some r =>
+        simp only [hr, Option.map_some, Option.getD_some] at hpos ⊢
+        exact titleReachable_place hdw hdh rfl hpos
+    · simp only [hz, hm, Bool.not_true, Bool.false_eq_true, ite_false] at hpos ⊢
+      refine ⟨d.bounds.x, ?_, ?_, ?_⟩ <;>
+        simp only [Window.setBounds, Rect.contains_iff, Rect.right] <;> omega
+  · simp only [hz, Bool.not_false, ite_true] at hpos ⊢
+    exact h w hw hpos
+
+theorem Reachable.arrange {d : Desktop α} (h : d.Reachable) (hdw : 0 < d.bounds.w)
+    (hdh : 0 < d.bounds.h) (layout : Array (Window α × Rect)) : (d.arrange layout).Reachable := by
+  unfold Desktop.arrange
+  split
+  · exact h
+  · have := Array.foldl_induction (as := layout) (init := d)
+      (motive := fun _ d' => d'.Reachable ∧ d'.bounds = d.bounds) ⟨h, rfl⟩
+      (f := fun d (w, r) => d.locate w.id r) fun i d' ⟨h₁, h₂⟩ => by
+        split
+        rename_i w r _
+        exact ⟨h₁.locate (h₂ ▸ hdw) (h₂ ▸ hdh) w.id r, by rw [Desktop.locate, bounds_modify, h₂]⟩
+    exact this.1
+
+theorem Reachable.tile {d : Desktop α} (h : d.Reachable) (hdw : 0 < d.bounds.w)
+    (hdh : 0 < d.bounds.h) : d.tile.Reachable := by
+  unfold Desktop.tile
+  dsimp only
+  split
+  · exact h
+  · exact h.arrange hdw hdh _
+
+theorem Reachable.cascade {d : Desktop α} (h : d.Reachable) (hdw : 0 < d.bounds.w)
+    (hdh : 0 < d.bounds.h) : d.cascade.Reachable :=
+  h.arrange hdw hdh _
+
+/-- Resizing the desktop to a non-empty area makes every window reachable, wherever the
+windows were before. -/
+theorem reachable_setBounds (d : Desktop α) {r : Rect} (hrw : 0 < r.w) (hrh : 0 < r.h) :
+    (d.setBounds r).Reachable := by
+  intro w hw hpos
+  simp only [Desktop.setBounds, Array.mem_map] at hw
+  obtain ⟨w₀, -, rfl⟩ := hw
+  show TitleReachable r _
+  by_cases hm : w₀.isMaximized d.bounds = true
+  · simp only [hm, ite_true] at hpos ⊢
+    refine ⟨r.x, ?_, ?_, ?_⟩ <;> simp only [Window.setBounds, Rect.contains_iff, Rect.right] <;> omega
+  · simp only [hm, Bool.false_eq_true, ite_false] at hpos ⊢
+    exact titleReachable_constrain (d := { d with bounds := r }) hrw hrh (p := w₀.bounds.origin)
+      rfl rfl hpos
 
 end Desktop
 

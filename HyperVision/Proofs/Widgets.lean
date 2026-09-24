@@ -361,8 +361,7 @@ def CursorValid (m : Memo) : Prop :=
 
 /-- Loading a string and reading the text back is the identity. -/
 theorem text_ofString (s : String) : (ofString s).text = s := by
-  simp [ofString, text, Array.toList_map, List.map_map, Function.comp_def, List.intercalate_splitOn,
-    String.ofList_toList]
+  simp [ofString, text, List.map_map, Function.comp_def, List.intercalate_splitOn, String.ofList_toList]
 
 theorem valid_ofString (s : String) : (ofString s).Valid := by
   simp only [Valid, ofString, Array.size_map, List.size_toArray]
