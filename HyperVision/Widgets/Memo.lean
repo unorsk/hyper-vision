@@ -13,10 +13,11 @@ namespace HyperVision
 structure TextPos where
   row : Nat
   col : Nat
-deriving BEq, DecidableEq, Repr, Inhabited
+deriving BEq, DecidableEq, Ord, Repr, Inhabited
 
 namespace TextPos
-def le (a b : TextPos) : Bool := a.row < b.row || (a.row == b.row && a.col ≤ b.col)
+/-- Document order (row first). -/
+def le (a b : TextPos) : Bool := compare a b != .gt
 end TextPos
 
 abbrev Line := Array Char
@@ -35,6 +36,8 @@ structure Memo where
   /-- `Tab` inserts spaces instead of moving the focus to the next control. -/
   acceptsTab : Bool := false
   autoIndent : Bool := true
+  /-- While the mouse button is held after a press on the scroll bar: whether it grabbed the thumb. -/
+  scrollGrab : Option Bool := none
 deriving Inhabited, Repr
 
 namespace Memo
@@ -184,10 +187,12 @@ def handleKey (m : Memo) (s : Size) (k : KeyEvent) : Memo × Reply :=
     | some p =>
       -- Page keys scroll the view along with the cursor.
       let m' := m.moveTo p k.mods.shift
-      let page := max 1 ((m.textSize s).h - 1)
+      let ts := m.textSize s
+      let page := max 1 (ts.h - 1)
+      let maxTop := m.lines.size - min m.lines.size ts.h
       some <| match k.key with
         | .pageUp => { m' with top := m.top - page }
-        | .pageDown => { m' with top := min (m.top + page) (m.lines.size - 1) }
+        | .pageDown => { m' with top := min (m.top + page) maxTop }
         | _ => m'
     | none =>
       match k.key with
@@ -196,7 +201,8 @@ def handleKey (m : Memo) (s : Size) (k : KeyEvent) : Memo × Reply :=
       | .delete => some m.deleteForward
       | .tab =>
         if m.acceptsTab && k.mods.isNone then
-          some (m.insertChars (Array.replicate (4 - m.cursor.col % 4) ' '))
+          let m := m.deleteSelection
+          some (m.insertChars (Array.replicate (4 - (m.clampPos m.cursor).col % 4) ' '))
         else none
       | .char 'a' =>
         if k.mods.ctrl then
@@ -222,6 +228,10 @@ def scrollBy (m : Memo) (s : Size) (dy dx : Int) : Memo :=
   { m with top := (clampInt (m.top + dy) 0 maxTop).toNat
            left := (clampInt (m.left + dx) 0 maxLeft).toNat }
 
+/-- Scrolls so that the scroll bar shows `value`. -/
+def scrollToValue (m : Memo) (s : Size) (vertical : Bool) (value : Nat) : Memo :=
+  if vertical then m.scrollBy s ((value : Int) - m.top) 0 else m.scrollBy s 0 ((value : Int) - m.left)
+
 /-- Applies a click on a scroll bar part. -/
 def scrollPart (m : Memo) (s : Size) (vertical : Bool) (sb : ScrollBar) (offset : Nat) : Memo :=
   let ts := m.textSize s
@@ -236,9 +246,18 @@ def handleMouse (m : Memo) (s : Size) (e : MouseEvent) : Memo × Reply :=
   match e.action with
   | .wheelUp => (m.scrollBy s (-3) 0, .handled)
   | .wheelDown => (m.scrollBy s 3 0, .handled)
+  | .release => ({ m with scrollGrab := none }, .handled)
   | .press | .drag =>
-    if m.scrollBar && e.pos.x == ts.w then
-      (m.scrollPart s true (m.vBar ts.h s.h) (clampInt e.pos.y 0 (s.h - 1)).toNat, .handled)
+    let sb := m.vBar ts.h s.h
+    let off := (clampInt e.pos.y 0 (s.h - 1)).toNat
+    match e.action, m.scrollGrab with
+    | .drag, some true => (m.scrollToValue s true (sb.valueAt off), .handled)
+    | .drag, some false => (m, .handled)
+    | _, _ =>
+    if e.action == .press && m.scrollBar && e.pos.x == ts.w then
+      let thumb := sb.hit off == .thumb
+      let m := { m with scrollGrab := some thumb }
+      (if thumb then m else m.scrollPart s true sb off, .handled)
     else
       -- Dragging past the edges scrolls the text.
       let m := if e.action == .drag then
@@ -286,5 +305,6 @@ instance : Widget Memo where
       some ⟨c.col - m.left, c.row - m.top⟩
     else none
   wantsText _ := true
+  cancelMouse m := { m with scrollGrab := none }
 
 end HyperVision

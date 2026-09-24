@@ -64,6 +64,9 @@ def wantsText (k : ControlKind α) : Bool := k.withWidget fun w _ => Widget.want
 
 def onFocus (k : ControlKind α) : ControlKind α := k.withWidget fun w wrap => wrap (Widget.onFocus w)
 
+def cancelMouse (k : ControlKind α) : ControlKind α :=
+  k.withWidget fun w wrap => wrap (Widget.cancelMouse w)
+
 end ControlKind
 
 /--
@@ -103,7 +106,7 @@ end GrowMode
 structure Control (α : Type) where
   /-- Used to link labels and to read values back; may be empty. -/
   name : String := ""
-  /-- Position relative to the window interior. -/
+  /-- Position relative to the window interior, for the window's `layoutSize`. -/
   bounds : Rect
   grow : GrowMode := {}
   kind : ControlKind α

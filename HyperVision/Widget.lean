@@ -81,6 +81,8 @@ class Widget (W : Type) where
   wantsText : W → Bool := fun _ => false
   /-- Called when the widget gains the focus. -/
   onFocus : W → W := id
+  /-- Abandons a mouse interaction whose release was lost. -/
+  cancelMouse : W → W := id
 
 /-! ## Scroll bars -/
 

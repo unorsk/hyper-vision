@@ -74,5 +74,6 @@ instance {α : Type} : Widget (Button α) where
   handleMouse := Button.handleMouse
   focusable b := b.enabled
   hotkey b c := if b.enabled && b.title.hotkey? == some c then some (b, .activated) else none
+  cancelMouse b := { b with down := false }
 
 end HyperVision

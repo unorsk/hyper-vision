@@ -55,6 +55,13 @@ def ansi : Color → Nat × Bool
   | lightCyan => (6, true) | lightRed => (1, true) | lightMagenta => (5, true)
   | yellow => (3, true) | white => (7, true)
 
+/-- The closest entry of the fixed xterm 256-color cube. -/
+def xterm256 : Color → Nat
+  | black => 16 | blue => 19 | green => 34 | cyan => 37
+  | red => 124 | magenta => 127 | brown => 130 | lightGray => 145
+  | darkGray => 59 | lightBlue => 63 | lightGreen => 83 | lightCyan => 87
+  | lightRed => 203 | lightMagenta => 207 | yellow => 227 | white => 231
+
 theorem ofIndex_index (c : Color) : ofIndex c.index = c := by
   cases c <;> rfl
 

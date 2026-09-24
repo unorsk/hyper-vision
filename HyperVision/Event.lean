@@ -41,8 +41,19 @@ def ctrl (c : Char) : KeyEvent := ⟨.char c, { ctrl := true }⟩
 /-- The printable character typed, if this is plain (or shifted) text input. -/
 def text? (k : KeyEvent) : Option Char :=
   match k.key with
-  | .char c => if !k.mods.alt && !k.mods.ctrl && c.toNat ≥ 32 then some c else none
+  | .char c =>
+    let n := c.toNat
+    if !k.mods.alt && !k.mods.ctrl && n ≥ 32 && !(0x7F ≤ n && n < 0xA0) then some c else none
   | _ => none
+
+/-- Canonical form for shortcut matching: letters typed with Alt or Ctrl ignore case and Shift. -/
+def normalize (k : KeyEvent) : KeyEvent :=
+  match k.key with
+  | .char c => if k.mods.alt || k.mods.ctrl then ⟨.char c.toLower, { k.mods with shift := false }⟩ else k
+  | _ => k
+
+/-- Whether a key press triggers the shortcut `binding`. -/
+def triggers (k binding : KeyEvent) : Bool := k.normalize == binding.normalize
 
 /-- Human-readable name, e.g. `Alt-X` or `F10` (used in menus and the status line). -/
 def label (k : KeyEvent) : String :=

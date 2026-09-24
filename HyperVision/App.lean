@@ -39,6 +39,10 @@ def adjust (p : Popup) : Popup :=
 def moveBy (p : Popup) (delta : Int) : Popup :=
   { p with current := (clampInt (p.current + delta) 0 (p.items.size - 1)).toNat }.adjust
 
+/-- The list's scroll bar; like Turbo Vision's list viewers it tracks the highlighted item. -/
+def scrollBar (p : Popup) : ScrollBar :=
+  { vertical := true, length := p.listHeight, value := p.current, max := p.items.size - 1 }
+
 def itemAt? (p : Popup) (pos : Point) : Option Nat :=
   let row := pos.y - p.rect.y - 1
   let i := (p.top : Int) + row
@@ -62,9 +66,7 @@ def draw (p : Popup) (t : Theme) : DrawM Unit := do
         Draw.hline 1 (row + 1) (w - 2) ' ' attr
         Draw.putStr 2 (row + 1) (fitString s (w - 4)) attr
     if p.items.size > p.listHeight then
-      let sb : ScrollBar :=
-        { vertical := true, length := p.listHeight, value := p.current, max := p.items.size - 1 }
-      sb.draw (w - 1 : Nat) 1 c.scrollPage c.scrollControls
+      p.scrollBar.draw (w - 1 : Nat) 1 c.scrollPage c.scrollControls
 
 end Popup
 
@@ -121,9 +123,16 @@ private def modifyDesktop (f : Desktop α → Desktop α) : AppM α Unit :=
 
 /-! ### Commands -/
 
+/-- Commands that stay available from outside a modal window while it is open. -/
+def modalSafe : Command α → Bool
+  | .quit | .close | .ok | .cancel | .zoom | .resize => true
+  | _ => false
+
 def dispatch (cmd : Command α) (source : Option Nat := none) : AppM α Unit := do
   let app ← read
   let d := (← get).desktop
+  -- While a modal window is open only its own controls may issue arbitrary commands.
+  if d.modalActive && source != d.top?.map (·.id) && !modalSafe cmd then return
   let target := source <|> d.top?.map (·.id)
   match cmd with
   | .quit => modify fun s => { s with quit := true }
@@ -291,16 +300,17 @@ def popupMouse (p : Popup) (m : MouseEvent) : AppM α Unit := do
         let p := { p with current := i }
         if m.action == .release then choosePopup p else set p
       | none =>
-        -- Scroll bar on the right edge.
-        if m.pos.x == p.rect.right - 1 && m.action == .press then
-          let sb : ScrollBar := { vertical := true, length := p.listHeight, value := p.top
-                                  max := p.items.size - p.listHeight }
-          let off := (m.pos.y - p.rect.y - 1).toNat
-          let top : Int := match sb.hit off with
-            | .decArrow => p.top - 1 | .incArrow => p.top + 1
-            | .pageDec => (p.top : Int) - p.listHeight | .pageInc => p.top + p.listHeight
-            | .thumb => sb.valueAt off
-          set { p with top := (clampInt top 0 sb.max).toNat }
+        -- Scroll bar on the right edge: it moves the highlight, which the view follows.
+        if m.pos.x == p.rect.right - 1 && p.items.size > p.listHeight then
+          let sb := p.scrollBar
+          let off := (clampInt (m.pos.y - p.rect.y - 1) 0 (p.listHeight - 1)).toNat
+          if m.action == .drag then set { p with current := sb.valueAt off }.adjust
+          else if m.action == .press then
+            let delta : Int := match sb.hit off with
+              | .decArrow => -1 | .incArrow => 1
+              | .pageDec => -(p.listHeight : Int) | .pageInc => p.listHeight
+              | .thumb => 0
+            set (p.moveBy delta)
   | _ => pure ()
 
 /-! ### Keyboard -/
@@ -337,7 +347,7 @@ def handleKey (k : KeyEvent) : AppM α Unit := do
   if let some (id, orig) := st.keyDrag then return (← keyDragKey id orig k)
   -- As in Turbo Vision, the status line sees every key first, so its bindings
   -- (Alt-X, F5, …) work even while a menu or a drop-down list is open.
-  let statusCmd := app.statusLine.find? (·.key == k) |>.map (·.cmd)
+  let statusCmd := app.statusLine.find? (k.triggers ·.key) |>.map (·.cmd)
   let isMenuCmd := statusCmd.any fun | .menu => true | _ => false
   if let some cmd := statusCmd then
     if !(st.menu.isSome && isMenuCmd) then
@@ -354,7 +364,7 @@ def handleKey (k : KeyEvent) : AppM α Unit := do
     | _ => none
   let menuCmd := if modal then none else
     (app.menuBar.flatMap (MenuBar.shortcuts ·.items)).findSome? fun (key, cmd, enabled) =>
-      if key == k && enabled then some cmd else none
+      if k.triggers key && enabled then some cmd else none
   let windowNum : Option Nat := match k.key with
     | .char c => if k.mods.alt && '1' ≤ c && c ≤ '9' then some (c.toNat - '0'.toNat) else none
     | _ => none
@@ -398,7 +408,7 @@ def captured (c : Capture) (m : MouseEvent) : AppM α Unit := do
         let off := if vertical then p.y - 1 else p.x - 18
         let len := ((if vertical then w.vScrollBar? else w.hScrollBar?).map (·.length)).getD 3
         let off := (clampInt off 1 (len - 2)).toNat
-        modifyDesktop (·.modify id (·.scrollEditor vertical off))
+        modifyDesktop (·.modify id (·.scrollEditor vertical off (thumb := true)))
   | .status i =>
     let over := m.pos.y == st.screen.h - 1 && StatusLine.itemAt? (← read).statusLine m.pos.x == some i
     modify fun s => { s with statusPressed := if over then some i else none }
@@ -407,6 +417,20 @@ def captured (c : Capture) (m : MouseEvent) : AppM α Unit := do
       if over then
         if let some item := (← read).statusLine[i]? then dispatch item.cmd
   if release then modify fun s => { s with capture := .none }
+
+/-- Ends a mouse capture whose release never arrived, resetting what it left pressed. -/
+def dropCapture : AppM α Unit := do
+  match (← get).capture with
+  | .move id _ | .resize id _ => setDragging id false
+  | .control id i => modifyDesktop (·.modify id (·.cancelMouse i))
+  | _ => pure ()
+  modify fun s => { s with capture := .none, statusPressed := none }
+
+/-- Leaves keyboard move/resize mode, keeping the window where it is. -/
+def endKeyDrag : AppM α Unit := do
+  if let some (id, _) := (← get).keyDrag then
+    modify fun s => { s with keyDrag := none }
+    setDragging id false
 
 /-- A left-button press on the desktop area. -/
 def pressDesktop (m : MouseEvent) : AppM α Unit := do
@@ -459,9 +483,10 @@ def handleMouse (m : MouseEvent) : AppM α Unit := do
   if let some t := st.menu then return (← menuMouse t m)
   if let some p := st.popup then return (← popupMouse p m)
   if st.capture != .none then
-    if m.action != .press then return (← captured st.capture m)
-    -- A press while captured means the release was lost: drop the stale capture.
-    modify fun s => { s with capture := .none }
+    -- A press, or motion with no button held, means the release was lost.
+    if m.action == .press || m.action == .move then dropCapture
+    else return (← captured st.capture m)
+  if m.action == .press then endKeyDrag
   let modal := st.desktop.modalActive
   match m.action with
   | .press =>

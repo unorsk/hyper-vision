@@ -42,6 +42,14 @@ def keyEv (k : Key) (mods : Modifiers := {}) : Event := .key ⟨k, mods⟩
   (#[.mouse { pos := ⟨10, 4⟩, button := .left, action := .release }], 0)
 #guard decodeStr "\x1b[<65;1;1M" ==
   (#[.mouse { pos := ⟨0, 0⟩, button := .middle, action := .wheelDown }], 0)
+-- Extra mouse buttons (back/forward) are ignored.
+#guard decodeStr "\x1b[<128;1;1M" == (#[], 0)
+-- Linux console function keys.
+#guard decodeStr "\x1b[[C" == (#[keyEv (.f 3)], 0)
+-- C1 control characters are not text.
+#guard (KeyEvent.plain (.char (Char.ofNat 0x85))).text? == none
+-- Shortcuts ignore case and Shift for Alt/Ctrl letters.
+#guard (KeyEvent.alt 'X').triggers (KeyEvent.alt 'x')
 
 /-! ## Text and screen -/
 
@@ -72,6 +80,13 @@ def keyEv (k : Key) (mods : Modifiers := {}) : Event := .key ⟨k, mods⟩
 #guard ((({ Memo.ofString "hello" with cursor := ⟨0, 2⟩ }).newline).backspace).text == "hello"
 #guard ((Memo.ofString "ab").insertText "x\ny").text == "x\nyab"
 #guard (({ Memo.ofString "one two" with cursor := ⟨0, 7⟩ }).wordLeft ⟨0, 7⟩) == ⟨0, 4⟩
+-- Page Down stops when the last line reaches the bottom.
+#guard ((List.range 3).foldl (fun m _ => (m.handleKey ⟨10, 4⟩ (.plain .pageDown)).1)
+  (Memo.ofString "0\n1\n2\n3\n4\n5\n6\n7\n8\n9")).top == 6
+-- Tab replaces the selection, then pads to the next tab stop.
+def tabMemo : Memo :=
+  { Memo.ofString "abcdefgh" with acceptsTab := true, anchor := some ⟨0, 2⟩, cursor := ⟨0, 5⟩ }
+#guard (tabMemo.handleKey ⟨20, 4⟩ (.plain .tab)).1.text == "ab  fgh"
 
 /-! ## Layout -/
 
@@ -91,6 +106,10 @@ def twoWindows : Desktop Unit :=
 -- Zoom fills the desktop; zooming again restores the previous bounds.
 #guard ((twoWindows.toggleZoom 1).find? 1).map (·.bounds) == some ⟨0, 1, 80, 23⟩
 #guard (((twoWindows.toggleZoom 1).toggleZoom 1).find? 1).map (·.bounds) == some ⟨0, 1, 20, 10⟩
+-- Tiling that would go below a window's minimum size is refused.
+#guard (((List.range 25).foldl (fun d _ => d.insert (Window.new "W" ⟨0, 1, 20, 8⟩))
+  ({ bounds := ⟨0, 1, 80, 23⟩ } : Desktop Unit)).cascade.windows.map (·.bounds)).all
+  (· == ⟨0, 1, 20, 8⟩)
 -- Windows cannot be dragged above the desktop or entirely off its right edge.
 #guard ((twoWindows.moveTo 2 ⟨200, -5⟩).find? 2).map (·.bounds.origin) == some ⟨79, 1⟩
 
@@ -110,5 +129,38 @@ def form : Window Unit :=
 #guard match (form.handleKey (.plain .enter)).2 with
   | .command .ok => true
   | _ => false
+
+-- Shrinking and regrowing a window restores its controls' layout.
+#guard
+  let w : Window Unit := Window.dialog "D" ⟨0, 0, 50, 10⟩ #[Control.inputLine "i" 13 1 32 "" .stretchX]
+  let w' := (w.setBounds ⟨0, 0, 16, 10⟩).setBounds ⟨0, 0, 50, 10⟩
+  (w'.control? "i").map w'.boundsOf == some ⟨13, 1, 32, 1⟩
+
+/-! ## Application behaviour (run headlessly) -/
+
+def check (ok : Bool) (msg : String) : IO Unit := unless ok do throw (IO.userError msg)
+
+def runEvents (d : Desktop Unit) (evs : List Event) : IO (AppState Unit) := do
+  let app : App Unit := { menuBar := #[], statusLine :=
+    #[StatusItem.new "~F4~ New" (KeyEvent.plain (.f 4)) .tile] }
+  evs.foldlM (init := { desktop := d, screen := ⟨80, 25⟩ }) fun st ev => do
+    return (← ((App.handleEvent ev).run app).run st).2
+
+-- A modal window cannot be escaped through the status line, but can be dismissed.
+#eval show IO Unit from do
+  let d := twoWindows.insertCentered (Window.messageBox "Note" "Hi")
+  let st ← runEvents d [.key (KeyEvent.plain (.f 4))]
+  check (st.desktop.top?.map (·.title) == some "Note") "status command escaped a modal window"
+  check ((st.desktop.find? 1).map (·.bounds) == some ⟨0, 1, 20, 10⟩) "status command reached the desktop"
+  let st ← runEvents st.desktop [.key (KeyEvent.plain .enter)]
+  check (st.desktop.top?.map (·.title) == some "B") "Enter did not close the message box"
+
+-- A lost mouse release does not leave a window stuck in the dragging state.
+#eval show IO Unit from do
+  let press : Event := .mouse { pos := ⟨10, 5⟩, button := .left, action := .press }
+  let move : Event := .mouse { pos := ⟨12, 6⟩, button := .none, action := .move }
+  let st ← runEvents twoWindows [press, move]
+  check (st.capture == .none) "capture survived a lost release"
+  check (st.desktop.windows.all (!·.dragging)) "window left in dragging state"
 
 end HyperVisionTests

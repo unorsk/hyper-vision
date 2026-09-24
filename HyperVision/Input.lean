@@ -31,7 +31,7 @@ private def modsOfParam (p : Nat) : Modifiers :=
   { shift := m &&& 1 != 0, alt := m &&& 2 != 0 || m &&& 8 != 0, ctrl := m &&& 4 != 0 }
 
 /-- Decodes a single (non-escape) byte or UTF-8 sequence at `i`. -/
-private def decodeText (bs : Array UInt8) (i : Nat) (flush : Bool) :
+private def decodeText (bs : ByteArray) (i : Nat) (flush : Bool) :
     Option (Option Event × Nat) :=
   match bs[i]? with
   | none => none
@@ -82,6 +82,8 @@ private def csiKey (params : Array Nat) (final : Char) : Option Event :=
 private def sgrMouse (params : Array Nat) (final : Char) : Option Event :=
   match params with
   | #[b, x, y] =>
+    -- Buttons 8‥11 (back/forward, bit 128) are not supported.
+    if b &&& 128 != 0 then none else
     let mods : Modifiers := { shift := b &&& 4 != 0, alt := b &&& 8 != 0, ctrl := b &&& 16 != 0 }
     let pos : Point := ⟨(x : Int) - 1, (y : Int) - 1⟩
     let button := match b &&& 3 with
@@ -95,12 +97,12 @@ private def sgrMouse (params : Array Nat) (final : Char) : Option Event :=
   | _ => none
 
 /-- Scans a CSI sequence whose parameters start at `start`; returns the final byte index. -/
-private def findFinal (bs : Array UInt8) (start : Nat) : Option Nat :=
+private def findFinal (bs : ByteArray) (start : Nat) : Option Nat :=
   (List.range (bs.size - start)).findSome? fun k =>
     let b := bs[start + k]?.getD 0
     if 0x40 ≤ b && b ≤ 0x7E then some (start + k) else none
 
-private def bytesToString (bs : Array UInt8) (lo hi : Nat) : String :=
+private def bytesToString (bs : ByteArray) (lo hi : Nat) : String :=
   String.ofList ((bs.extract lo hi).toList.map fun b => Char.ofNat b.toNat)
 
 private def ss3Key (b : UInt8) : Option Event :=
@@ -115,14 +117,22 @@ private def withAlt : Option Event → Option Event
   | ev => ev
 
 /-- Decodes one event starting at `i`. With `flush`, a pending lone ESC is a key press. -/
-def step (bs : Array UInt8) (flush : Bool) (i : Nat) (_h : i < bs.size) : Step i :=
-  if bs[i]? != some 0x1b then
+def step (bs : ByteArray) (flush : Bool) (i : Nat) (h : i < bs.size) : Step i :=
+  if bs[i] != 0x1b then
     match decodeText bs i flush with
     | some (ev, n) => .advance ev (i + n)
     | none => .incomplete
   else match bs[i + 1]? with
     | none => if flush then .advance (key .escape) (i + 1) else .incomplete
     | some 0x5b => -- '['
+      -- The Linux console sends F1‥F5 as `ESC [ [ A`‥`E`.
+      if bs[i + 2]? == some 0x5b then
+        match bs[i + 3]? with
+        | some b =>
+          let ev := if 0x41 ≤ b && b ≤ 0x45 then key (.f (b - 0x40).toNat) else none
+          .advance ev (i + 4)
+        | none => if flush then .advance none bs.size else .incomplete
+      else
       match findFinal bs (i + 2) with
       | none => if flush then .advance none bs.size else .incomplete
       | some j =>
@@ -143,7 +153,7 @@ def step (bs : Array UInt8) (flush : Bool) (i : Nat) (_h : i < bs.size) : Step i
       | none => .incomplete
 
 /-- Decodes events from position `i`; returns them with the index of the first unconsumed byte. -/
-def decodeFrom (bs : Array UInt8) (flush : Bool) (i : Nat) (acc : Array Event) :
+def decodeFrom (bs : ByteArray) (flush : Bool) (i : Nat) (acc : Array Event) :
     Array Event × Nat :=
   if h : i < bs.size then
     match step bs flush i h with
@@ -157,8 +167,7 @@ Decodes a byte buffer. Returns the events and the unconsumed tail, which should 
 prepended to the next read. With `flush`, incomplete sequences are resolved eagerly.
 -/
 def decode (bytes : ByteArray) (flush : Bool := false) : Array Event × ByteArray :=
-  let bs := bytes.data
-  let (evs, j) := decodeFrom bs flush 0 #[]
-  (evs, ⟨bs.extract j bs.size⟩)
+  let (evs, j) := decodeFrom bytes flush 0 #[]
+  (evs, bytes.extract j bytes.size)
 
 end HyperVision.Input

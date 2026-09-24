@@ -44,6 +44,9 @@ structure Window (α : Type) where
   number : Option Nat := none
   /-- Bounds in screen coordinates, frame included. -/
   bounds : Rect
+  /-- The window size the controls were laid out for. Their actual bounds follow from
+  their grow modes and the difference to this size, so shrinking never loses layout. -/
+  layoutSize : Size := ⟨bounds.w, bounds.h⟩
   style : WindowStyle := .blue
   flags : WindowFlags := {}
   controls : Array (Control α) := #[]
@@ -140,12 +143,16 @@ def emphasized (w : Window α) (i : Nat) : Bool :=
     b.isDefault && !(w.focused?.any fun c => match c.kind with | .button _ => true | _ => false)
   | _ => false
 
-/-- Resizes the window, moving and stretching controls by their grow modes. -/
-def setBounds (w : Window α) (r : Rect) : Window α :=
-  let dx : Int := (r.w : Int) - w.bounds.w
-  let dy : Int := (r.h : Int) - w.bounds.h
-  { w with bounds := r
-           controls := w.controls.map fun c => { c with bounds := c.grow.apply c.bounds dx dy } }
+/-- Moves or resizes the window; controls follow through their grow modes. -/
+def setBounds (w : Window α) (r : Rect) : Window α := { w with bounds := r }
+
+/-- A control's current bounds (interior coordinates), after applying its grow mode. -/
+def boundsOf (w : Window α) (c : Control α) : Rect :=
+  c.grow.apply c.bounds ((w.bounds.w : Int) - w.layoutSize.w) ((w.bounds.h : Int) - w.layoutSize.h)
+
+def sizeOf (w : Window α) (c : Control α) : Size :=
+  let r := w.boundsOf c
+  ⟨r.w, r.h⟩
 
 /-! ### Drawing -/
 
@@ -212,16 +219,17 @@ def draw (w : Window α) (t : Theme) (active : Bool) (maximized : Bool := false)
     for h : i in [0:w.controls.size] do
       let c := w.controls[i]
       let ctx : DrawCtx :=
-        { theme := t, size := c.size, focused := active && w.focus == some i
+        { theme := t, size := w.sizeOf c, focused := active && w.focus == some i
           emphasized := active && w.emphasized i, inDialog := w.isDialog, window := colors }
-      Draw.within c.bounds (c.kind.draw ctx)
+      Draw.within (w.boundsOf c) (c.kind.draw ctx)
 
 /-- Where the hardware cursor goes (window coordinates), if the focused control has one. -/
 def cursorPos? (w : Window α) : Option Point := do
   let c ← w.focused?
-  let p ← c.kind.cursor? c.size
-  let abs := p + c.bounds.origin + ⟨1, 1⟩
-  if w.interior.contains abs && c.bounds.contains (p + c.bounds.origin) then some abs else none
+  let r := w.boundsOf c
+  let p ← c.kind.cursor? (w.sizeOf c)
+  let abs := p + r.origin + ⟨1, 1⟩
+  if w.interior.contains abs && r.contains (p + r.origin) then some abs else none
 
 /-! ### Events -/
 
@@ -239,7 +247,7 @@ def applyReply (w : Window α) (i : Nat) (r : Reply) : Window α × WindowReply 
     | some j => (w.setFocus j, .handled)
     | none => (w, .handled)
   | .dropDown anchor items current =>
-    let origin := (w.controls[i]?.map (·.bounds.origin)).getD Point.origin
+    let origin := (w.controls[i]?.map (w.boundsOf · |>.origin)).getD Point.origin
     (w, .dropDown i (anchor.translate (origin + ⟨1, 1⟩)) items current)
 
 private def updateKind (w : Window α) (i : Nat) (k : ControlKind α) : Window α :=
@@ -262,7 +270,7 @@ def handleKey (w : Window α) (k : KeyEvent) : Window α × WindowReply α :=
   let fromFocus : Window α × WindowReply α :=
     match w.focus, w.focused? with
     | some i, some c =>
-      let (kind, r) := c.kind.handleKey c.size k
+      let (kind, r) := c.kind.handleKey (w.sizeOf c) k
       (updateKind w i kind).applyReply i r
     | _, _ => (w, .ignored)
   match fromFocus with
@@ -305,32 +313,42 @@ def frameHit (w : Window α) (p : Point) : FrameHit :=
 def controlAt? (w : Window α) (p : Point) : Option Nat :=
   let q := p - ⟨1, 1⟩
   (List.range w.controls.size).reverse.find? fun i =>
-    (w.controls[i]?.map (·.bounds.contains q)).getD false
+    (w.controls[i]?.map fun c => (w.boundsOf c).contains q).getD false
 
 /-- Delivers a mouse event (window coordinates) to control `i`, focusing it on a press. -/
 def mouseControl (w : Window α) (i : Nat) (e : MouseEvent) : Window α × WindowReply α :=
   let w := if e.action == .press then w.setFocus i else w
   match w.controls[i]? with
   | some c =>
-    let (kind, r) := c.kind.handleMouse c.size (e.relativeTo (c.bounds.origin + ⟨1, 1⟩))
+    let (kind, r) := c.kind.handleMouse (w.sizeOf c) (e.relativeTo ((w.boundsOf c).origin + ⟨1, 1⟩))
     (updateKind w i kind).applyReply i r
   | none => (w, .ignored)
 
-/-- Scrolls the editor memo from a click on a frame scroll bar. -/
-def scrollEditor (w : Window α) (vertical : Bool) (offset : Nat) : Window α :=
+/-- Scrolls the editor memo from a click on a frame scroll bar, or (with `thumb`) from
+dragging its thumb to `offset`. -/
+def scrollEditor (w : Window α) (vertical : Bool) (offset : Nat) (thumb : Bool := false) :
+    Window α :=
   match w.editor, w.editor.bind (w.controls[·]?) with
-  | some i, some { kind := .memo m, bounds, .. } =>
+  | some i, some c@{ kind := .memo m, .. } =>
+    let s := w.sizeOf c
     let sb? := if vertical then w.vScrollBar? else w.hScrollBar?
     match sb? with
-    | some sb => updateKind w i (.memo (m.scrollPart ⟨bounds.w, bounds.h⟩ vertical sb offset))
+    | some sb =>
+      let m := if thumb then m.scrollToValue s vertical (sb.valueAt offset)
+        else m.scrollPart s vertical sb offset
+      updateKind w i (.memo m)
     | none => w
   | _, _ => w
+
+/-- Abandons the mouse interaction of control `i` (its release was lost). -/
+def cancelMouse (w : Window α) (i : Nat) : Window α :=
+  { w with controls := w.controls.modify i fun c => { c with kind := c.kind.cancelMouse } }
 
 /-- Mouse wheel over an editor window scrolls its text. -/
 def wheel (w : Window α) (down : Bool) : Window α :=
   match w.editor, w.editor.bind (w.controls[·]?) with
-  | some i, some { kind := .memo m, bounds, .. } =>
-    updateKind w i (.memo (m.scrollBy ⟨bounds.w, bounds.h⟩ (if down then 3 else -3) 0))
+  | some i, some c@{ kind := .memo m, .. } =>
+    updateKind w i (.memo (m.scrollBy (w.sizeOf c) (if down then 3 else -3) 0))
   | _, _ => w
 
 /-! ### Constructors -/

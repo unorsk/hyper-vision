@@ -44,7 +44,8 @@ def freeNumber (d : Desktop α) : Option Nat :=
 /-- Adds a window in front and returns its id. Plain windows get a free number. -/
 def insert' (d : Desktop α) (w : Window α) : Desktop α × Nat :=
   let number := if w.isDialog || w.number.isSome then w.number else d.freeNumber
-  let w := { w with id := d.nextId, number }.initFocus
+  -- As in `TWindow`'s constructor, un-zooming restores the initial bounds.
+  let w := { w with id := d.nextId, number, zoomRect := w.zoomRect <|> some w.bounds }.initFocus
   ({ d with windows := d.windows.push w, nextId := d.nextId + 1 }, w.id)
 
 def insert (d : Desktop α) (w : Window α) : Desktop α := (d.insert' w).1
@@ -120,18 +121,22 @@ def mostEqualDivisors (n : Nat) : Nat × Nat :=
 
 private def dividerLoc (lo : Int) (len num pos : Nat) : Int := lo + (len * pos / num : Nat)
 
+/-- Places each window at its rectangle, unless one would be below its minimum size
+(Turbo Vision refuses such a layout with `tileError`). -/
+def arrange (d : Desktop α) (layout : Array (Window α × Rect)) : Desktop α :=
+  if layout.any fun (w, r) => r.w < w.minSize.w || r.h < w.minSize.h then d
+  else layout.foldl (fun d (w, r) => d.modify w.id (·.setBounds r)) d
+
 /-- Tiles the plain windows over the desktop, front-most at the bottom-right. -/
-def tile (d : Desktop α) : Desktop α := Id.run do
-  let ids := (d.windows.filter tileable).map (·.id)
-  let n := ids.size
-  if n == 0 then return d
+def tile (d : Desktop α) : Desktop α :=
+  let ws := d.windows.filter tileable
+  let n := ws.size
   let (cols, rows) := mostEqualDivisors n
   let r := d.bounds
-  if cols == 0 || rows == 0 || r.w / cols == 0 || r.h / rows == 0 then return d
+  if n == 0 || cols == 0 || rows == 0 then d else
   let leftOver := n % cols
   let split := (cols - leftOver) * rows
-  let mut d := d
-  for h : k in [0:n] do
+  d.arrange <| ws.mapIdx fun k w =>
     let (cx, cy, rowsHere) :=
       if k < split then (k / rows, k % rows, rows)
       else ((k - split) / (rows + 1) + (cols - leftOver), (k - split) % (rows + 1), rows + 1)
@@ -139,19 +144,12 @@ def tile (d : Desktop α) : Desktop α := Id.run do
     let x1 := dividerLoc r.x r.w cols (cx + 1)
     let y0 := dividerLoc r.y r.h rowsHere cy
     let y1 := dividerLoc r.y r.h rowsHere (cy + 1)
-    d := d.modify ids[k] fun w =>
-      w.setBounds ⟨x0, y0, (x1 - x0).toNat, (y1 - y0).toNat⟩
-  return d
+    (w, ⟨x0, y0, (x1 - x0).toNat, (y1 - y0).toNat⟩)
 
 /-- Cascades the plain windows, each offset one cell from the one behind it. -/
-def cascade (d : Desktop α) : Desktop α := Id.run do
-  let ids := (d.windows.filter tileable).map (·.id)
+def cascade (d : Desktop α) : Desktop α :=
   let r := d.bounds
-  let mut d := d
-  for h : k in [0:ids.size] do
-    d := d.modify ids[k] fun w =>
-      w.setBounds ⟨r.x + k, r.y + k, r.w - k, r.h - k⟩
-  return d
+  d.arrange <| (d.windows.filter tileable).mapIdx fun k w => (w, ⟨r.x + k, r.y + k, r.w - k, r.h - k⟩)
 
 /-- Adapts to a new desktop area (terminal resize). -/
 def setBounds (d : Desktop α) (r : Rect) : Desktop α :=
