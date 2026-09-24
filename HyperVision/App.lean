@@ -518,6 +518,16 @@ def handleEvent : Event → AppM α Unit
 
 /-! ### Drawing -/
 
+/-- The desktop layer: the background pattern, then every window with its drop
+shadow in z-order (back to front), all clipped to the desktop area `desk`. -/
+def drawDesktop (t : Theme) (d : Desktop α) (desk : Rect) : DrawM Unit := do
+  Draw.fill desk t.backgroundChar t.background
+  Draw.clip desk do
+    for h : i in [0:d.windows.size] do
+      let w := d.windows[i]
+      Draw.shadow w.bounds t.shadow t.shadowOnBlack
+      Draw.within w.bounds (w.draw t (i + 1 == d.windows.size) (w.isMaximized desk))
+
 /-- The DOS mouse cursor: the cell's attribute XOR `0x77`. -/
 def invertAttr (a : Attr) : Attr := Attr.ofByte (a.toByte ^^^ 0x77)
 
@@ -529,12 +539,7 @@ def render : AppM α (Screen × Option Point) := do
   let desk := desktopRect s
   let d := st.desktop
   let screen := Draw.run (Screen.new s.w s.h) do
-    Draw.fill desk t.backgroundChar t.background
-    Draw.clip desk do
-      for h : i in [0:d.windows.size] do
-        let w := d.windows[i]
-        Draw.shadow w.bounds t.shadow t.shadowOnBlack
-        Draw.within w.bounds (w.draw t (i + 1 == d.windows.size) (w.isMaximized desk))
+    drawDesktop t d desk
     MenuBar.drawBar app.menuBar st.menu t.menu s.w
     StatusLine.draw app.statusLine app.statusHint st.statusPressed t.statusLine (s.h - 1 : Nat) s.w
     if let some track := st.menu then

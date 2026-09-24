@@ -13,7 +13,7 @@ namespace HyperVision
 structure TextPos where
   row : Nat
   col : Nat
-deriving BEq, DecidableEq, Ord, Repr, Inhabited
+deriving DecidableEq, Ord, Repr, Inhabited
 
 namespace TextPos
 /-- Document order (row first). -/

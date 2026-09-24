@@ -11,7 +11,7 @@ namespace HyperVision
 structure Point where
   x : Int
   y : Int
-deriving BEq, DecidableEq, Repr, Inhabited, Hashable
+deriving DecidableEq, Repr, Inhabited, Hashable
 
 namespace Point
 
@@ -19,6 +19,11 @@ instance : Add Point := ⟨fun a b => ⟨a.x + b.x, a.y + b.y⟩⟩
 instance : Sub Point := ⟨fun a b => ⟨a.x - b.x, a.y - b.y⟩⟩
 
 def origin : Point := ⟨0, 0⟩
+
+@[simp] theorem add_x (a b : Point) : (a + b).x = a.x + b.x := rfl
+@[simp] theorem add_y (a b : Point) : (a + b).y = a.y + b.y := rfl
+@[simp] theorem sub_x (a b : Point) : (a - b).x = a.x - b.x := rfl
+@[simp] theorem sub_y (a b : Point) : (a - b).y = a.y - b.y := rfl
 
 end Point
 
@@ -28,7 +33,7 @@ structure Rect where
   y : Int
   w : Nat
   h : Nat
-deriving BEq, DecidableEq, Repr, Inhabited
+deriving DecidableEq, Repr, Inhabited
 
 namespace Rect
 
@@ -61,9 +66,43 @@ def intersect (a b : Rect) : Rect :=
 /-- Converts a point to coordinates relative to the rectangle's origin. -/
 def toLocal (r : Rect) (p : Point) : Point := p - r.origin
 
+/-- `r` lies inside `r'`. -/
+def Subset (r r' : Rect) : Prop := ∀ p, r.contains p → r'.contains p
+
+theorem contains_iff {r : Rect} {p : Point} :
+    r.contains p ↔ r.x ≤ p.x ∧ p.x < r.x + r.w ∧ r.y ≤ p.y ∧ p.y < r.y + r.h := by
+  unfold contains right bottom
+  simp only [Bool.and_eq_true, decide_eq_true_eq, and_assoc]
+
+/-- A point is in the intersection exactly when it is in both rectangles. -/
+theorem contains_intersect {a b : Rect} {p : Point} :
+    (a.intersect b).contains p ↔ a.contains p ∧ b.contains p := by
+  simp only [contains_iff, intersect, right, bottom]
+  omega
+
+theorem contains_translate {r : Rect} {d p : Point} :
+    (r.translate d).contains p ↔ r.contains (p - d) := by
+  simp only [contains_iff, translate]
+  show _ ↔ r.x ≤ p.x - d.x ∧ p.x - d.x < r.x + r.w ∧ r.y ≤ p.y - d.y ∧ p.y - d.y < r.y + r.h
+  omega
+
+theorem intersect_subset_left (a b : Rect) : (a.intersect b).Subset a :=
+  fun _ h => (contains_intersect.1 h).1
+
+theorem intersect_subset_right (a b : Rect) : (a.intersect b).Subset b :=
+  fun _ h => (contains_intersect.1 h).2
+
 end Rect
 
 /-- Clamps `v` into `[lo, hi]` (returns `lo` when the range is empty). -/
 def clampInt (v lo hi : Int) : Int := max lo (min v hi)
+
+theorem clampInt_ge (v lo hi : Int) : lo ≤ clampInt v lo hi := by unfold clampInt; omega
+
+theorem clampInt_le {v lo hi : Int} (h : lo ≤ hi) : clampInt v lo hi ≤ hi := by
+  unfold clampInt; omega
+
+theorem clampInt_of_mem {v lo hi : Int} (h₁ : lo ≤ v) (h₂ : v ≤ hi) : clampInt v lo hi = v := by
+  unfold clampInt; omega
 
 end HyperVision

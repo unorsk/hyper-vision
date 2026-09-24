@@ -12,7 +12,7 @@ namespace HyperVision
 
 inductive WindowStyle where
   | blue | cyan | gray | dialog
-deriving BEq, DecidableEq, Repr, Inhabited
+deriving DecidableEq, Repr, Inhabited
 
 def WindowStyle.colors (t : Theme) : WindowStyle → WindowColors
   | .blue => t.blueWindow

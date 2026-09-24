@@ -12,7 +12,7 @@ structure Modifiers where
   shift : Bool := false
   alt : Bool := false
   ctrl : Bool := false
-deriving BEq, DecidableEq, Repr, Inhabited
+deriving DecidableEq, Repr, Inhabited
 
 namespace Modifiers
 def none : Modifiers := {}
@@ -25,12 +25,12 @@ inductive Key where
   | up | down | left | right
   | home | «end» | pageUp | pageDown
   | f (n : Nat)
-deriving BEq, DecidableEq, Repr, Inhabited
+deriving DecidableEq, Repr, Inhabited
 
 structure KeyEvent where
   key : Key
   mods : Modifiers := {}
-deriving BEq, DecidableEq, Repr, Inhabited
+deriving DecidableEq, Repr, Inhabited
 
 namespace KeyEvent
 
@@ -70,11 +70,11 @@ end KeyEvent
 
 inductive MouseButton where
   | left | middle | right | none
-deriving BEq, DecidableEq, Repr, Inhabited
+deriving DecidableEq, Repr, Inhabited
 
 inductive MouseAction where
   | press | release | drag | move | wheelUp | wheelDown
-deriving BEq, DecidableEq, Repr, Inhabited
+deriving DecidableEq, Repr, Inhabited
 
 structure MouseEvent where
   pos : Point

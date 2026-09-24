@@ -19,3 +19,6 @@ import HyperVision.Menu
 import HyperVision.Desktop
 import HyperVision.App
 import HyperVision.Dialogs
+import HyperVision.Proofs.Draw
+import HyperVision.Proofs.App
+import HyperVision.Proofs.Render
