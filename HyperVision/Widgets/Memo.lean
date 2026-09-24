@@ -43,10 +43,10 @@ deriving Inhabited, Repr
 namespace Memo
 
 def ofString (s : String) : Memo :=
-  { lines := (s.splitOn "\n").toArray.map (·.toList.toArray) }
+  { lines := (s.toList.splitOn '\n').toArray.map List.toArray }
 
 def text (m : Memo) : String :=
-  "\n".intercalate (m.lines.toList.map fun l => String.ofList l.toList)
+  String.ofList (['\n'].intercalate (m.lines.toList.map (·.toList)))
 
 def line (m : Memo) (r : Nat) : Line := m.lines[r]?.getD #[]
 
@@ -117,10 +117,10 @@ def newline (m : Memo) : Memo :=
 /-- Inserts text that may span several lines (without auto-indent). -/
 def insertText (m : Memo) (s : String) : Memo :=
   let indent := m.autoIndent
-  let (m, _) := (s.splitOn "\n").foldl (init := ({ m with autoIndent := false }, true))
+  let (m, _) := (s.toList.splitOn '\n').foldl (init := ({ m with autoIndent := false }, true))
     fun (m, first) part =>
       let m := if first then m else m.newline
-      (m.insertChars part.toList.toArray, false)
+      (m.insertChars part.toArray, false)
   { m with autoIndent := indent }
 
 def backspace (m : Memo) : Memo :=

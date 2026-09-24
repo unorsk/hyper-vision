@@ -94,6 +94,26 @@ theorem intersect_subset_right (a b : Rect) : (a.intersect b).Subset b :=
 
 end Rect
 
+/--
+The indices `0‥n-1` in cyclic order starting just after `start` (forwards) or just
+before it (backwards). Used for Tab order and menu navigation.
+-/
+def cyclicOrder (n start : Nat) (forward : Bool) : List Nat :=
+  if forward then (List.range n).rotateLeft (start + 1)
+  else (List.range n).reverse.rotateLeft (n - start)
+
+theorem mem_rotateLeft {β : Type} {l : List β} {n : Nat} {a : β} : a ∈ l.rotateLeft n ↔ a ∈ l := by
+  unfold List.rotateLeft
+  dsimp only
+  split
+  · rfl
+  · rw [List.mem_append, Or.comm, ← List.mem_append, List.take_append_drop]
+
+/-- The cyclic order visits every index. -/
+theorem mem_cyclicOrder {n start i : Nat} {forward : Bool} : i ∈ cyclicOrder n start forward ↔ i < n := by
+  unfold cyclicOrder
+  split <;> simp [mem_rotateLeft]
+
 /-- Clamps `v` into `[lo, hi]` (returns `lo` when the range is empty). -/
 def clampInt (v lo hi : Int) : Int := max lo (min v hi)
 
