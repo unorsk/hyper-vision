@@ -26,3 +26,4 @@ import HyperVision.Proofs.Desktop
 import HyperVision.Proofs.Widgets
 import HyperVision.Proofs.Window
 import HyperVision.Proofs.Menu
+import HyperVision.Proofs.Input

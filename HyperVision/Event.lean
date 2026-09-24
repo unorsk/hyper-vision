@@ -83,7 +83,7 @@ structure MouseEvent where
   mods : Modifiers := {}
   /-- `true` for the second press of a double click. -/
   double : Bool := false
-deriving BEq, Repr, Inhabited
+deriving DecidableEq, Repr, Inhabited
 
 namespace MouseEvent
 /-- The same event with its position made relative to `o`. -/
@@ -95,6 +95,6 @@ inductive Event where
   | key (k : KeyEvent)
   | mouse (m : MouseEvent)
   | resize (width height : Nat)
-deriving BEq, Repr, Inhabited
+deriving DecidableEq, Repr, Inhabited
 
 end HyperVision
