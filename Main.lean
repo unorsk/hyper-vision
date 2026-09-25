@@ -16,6 +16,12 @@ inductive DemoCmd where
   | about
   | showValues
   | insert (text : String)
+  /-- Start a (fake) slow scan in the background while the UI stays live. -/
+  | scan
+  /-- Delivered by the scan job when it finishes (routes back through `onCommand`). -/
+  | scanDone (found : Nat)
+  /-- Delivered if the scan job threw. -/
+  | scanFailed (msg : String)
 deriving BEq, Repr, Inhabited
 
 abbrev Cmd := Command DemoCmd
@@ -71,6 +77,7 @@ def menuBar : Array (Menu DemoCmd) := #[
   Menu.new "~F~ile" #[
     MenuItem.item "~N~ew" (.user .newEditor) (some (KeyEvent.plain (.f 4))),
     MenuItem.item "~O~pen controls..." (.user .openControls) (some (KeyEvent.plain (.f 3))),
+    MenuItem.item "~S~can (async)" (.user .scan) (some (KeyEvent.plain (.f 7))),
     .separator,
     MenuItem.item "E~x~it" .quit (some (KeyEvent.alt 'x'))],
   Menu.new "~E~dit" #[
@@ -102,6 +109,7 @@ def statusLine : Array (StatusItem DemoCmd) := #[
   StatusItem.new "~F4~ New" (KeyEvent.plain (.f 4)) (.user .newEditor),
   StatusItem.new "~F5~ Zoom" (KeyEvent.plain (.f 5)) .zoom,
   StatusItem.new "~F6~ Next" (KeyEvent.plain (.f 6)) .nextWindow,
+  StatusItem.new "~F7~ Scan" (KeyEvent.plain (.f 7)) (.user .scan),
   StatusItem.new "~Alt-F3~ Close" ⟨.f 3, { alt := true }⟩ .close,
   StatusItem.new "~F10~ Menu" (KeyEvent.plain (.f 10)) .menu]
 
@@ -116,8 +124,15 @@ def summarize (w : Window DemoCmd) : String :=
   s!"Name:     {text "name"}\nLanguage: {text "lang"}\nStyle:    {", ".intercalate styleNames.toList}\n" ++
   s!"Size:     {#["Small", "Medium", "Large"][size]?.getD "?"}\nNotes:    {lines} lines"
 
+/-- Braille spinner frames; `onTick` cycles through them while the scan runs. -/
+def spinnerFrames : Array Char := #['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+
+/-- The scan window's title starts with this, so `onTick` and the result handler can
+find it again. -/
+def scanTitle : String := "Scanning"
+
 def onCommand (cmd : DemoCmd) (source : Option (Window DemoCmd)) (d : Desktop DemoCmd) :
-    IO (Desktop DemoCmd) := do
+    IO (Handled DemoCmd) := do
   match cmd with
   | .about => return d.insertCentered aboutBox
   | .openControls =>
@@ -138,9 +153,32 @@ def onCommand (cmd : DemoCmd) (source : Option (Window DemoCmd)) (d : Desktop De
         | .memo m => { c with kind := .memo (m.insertText text) }
         | _ => c
     | none => return d
+  | .scan =>
+    -- Already scanning? Do nothing. Otherwise open a live spinner window and start the
+    -- job. The window stays movable and the rest of the UI keeps responding.
+    if d.windows.any (·.title.startsWith scanTitle) then return (d : Handled DemoCmd)
+    let win := Window.new s!"{scanTitle} {spinnerFrames[0]!}  (still usable!)" ⟨18, 8, 40, 3⟩
+    -- A slow device call, faked with a sleep; its result is delivered as `.scanDone`.
+    return (d.insert win).spawn <| Job.of
+      (do IO.sleep 1500; pure (42 : Nat))
+      (onOk := .scanDone) (onError := fun e => .scanFailed e.toString)
+  | .scanDone found =>
+    -- Replace the spinner with a result box — just another command handler.
+    let d := (d.windows.filter (·.title.startsWith scanTitle)).foldl (fun d w => d.close w.id) d
+    return d.insertCentered (Window.messageBox "Scan complete" s!"^CFound {found} devices.")
+  | .scanFailed msg =>
+    let d := (d.windows.filter (·.title.startsWith scanTitle)).foldl (fun d w => d.close w.id) d
+    return d.insertCentered (Window.messageBox "Scan failed" s!"^C{msg}")
+
+/-- Advances the spinner window's title one frame per tick while the scan runs. -/
+def onTick (t : Nat) (d : Desktop DemoCmd) : Desktop DemoCmd :=
+  match d.windows.find? (·.title.startsWith scanTitle) with
+  | some w => d.modify w.id fun w =>
+      { w with title := s!"{scanTitle} {spinnerFrames[t % spinnerFrames.size]!}  (still usable!)" }
+  | none => d
 
 def demoApp (mouseCursor : Bool) : App DemoCmd :=
-  { menuBar, statusLine, onCommand, mouseCursor }
+  { menuBar, statusLine, onCommand, onTick, mouseCursor }
 
 def main : IO Unit := do
   let mouseCursor := (← IO.getEnv "HV_MOUSE_CURSOR").isSome

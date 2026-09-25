@@ -85,8 +85,9 @@ def statusLine : Array (StatusItem Cmd) := #[
   StatusItem.new "~Alt-F3~ Close" ⟨.f 3, { alt := true }⟩ .close,
   StatusItem.new "~F10~ Menu" (KeyEvent.plain (.f 10)) .menu]
 
-def onCommand (cmd : Cmd) (source : Option (Window Cmd)) (d : Desktop Cmd) : IO (Desktop Cmd) :=
-  pure <| match cmd with
+def onCommand (cmd : Cmd) (source : Option (Window Cmd)) (d : Desktop Cmd) : IO (Handled Cmd) := do
+  -- No jobs here; the `Desktop → Handled` coercion supplies the empty job list.
+  let d' : Desktop Cmd := match cmd with
   | .about => d.insertCentered (Window.messageBox "About" "^CHyper Vision\n\nA modal box.")
   | .openControls =>
     match d.windows.find? (·.title == "Controls") with
@@ -105,6 +106,7 @@ def onCommand (cmd : Cmd) (source : Option (Window Cmd)) (d : Desktop Cmd) : IO 
         | .memo m => { c with kind := .memo (m.insertText text) }
         | _ => c
     | none => d
+  return d'
 
 def app : App Cmd := { menuBar, statusLine, onCommand }
 

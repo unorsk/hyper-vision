@@ -202,4 +202,87 @@ def runEvents (d : Desktop Unit) (evs : List Event) : IO (AppState Unit) := do
   let some p := st.popup | throw (IO.userError "wheel closed the list")
   check (p.current == 4 && p.top ≤ p.current && p.current < p.top + p.listHeight) "wheel lost the highlight"
 
+/-! ## Background jobs (run headlessly)
+
+Exercises the effectful half of the async feature against a tiny app: a handler that
+starts a job, and the loop step (`deliverFinished`) that routes a finished job's result
+back through the handler. The pure algebra is proved in `HyperVision.Proofs.App`.
+-/
+
+namespace Jobs
+
+/-- A device scan, its result, and its failure — a single command type, as an IDE would use. -/
+inductive JCmd where
+  | scan | done (found : Nat) | failed
+deriving BEq, Inhabited
+
+/-- The spinner window's title, so the result handler can find and close it. -/
+def marker : String := "Scanning"
+
+def onCommand (cmd : JCmd) (_source : Option (Window JCmd)) (d : Desktop JCmd) :
+    IO (Handled JCmd) := do
+  match cmd with
+  | .scan =>
+    -- Open a spinner (deliberately *modal*, to prove a result still reaches the app)
+    -- and start the job; its Nat result is delivered as `.done`, a throw as `.failed`.
+    let d := d.insertCentered (Window.messageBox marker "working…")
+    return d.spawn (Job.of (pure (7 : Nat)) (onOk := .done) (onError := fun _ => .failed))
+  | .done found =>
+    let d := (d.windows.filter (·.title == marker)).foldl (fun d w => d.close w.id) d
+    return d.insert (Window.new s!"done {found}" ⟨2, 2, 20, 3⟩)
+  | .failed =>
+    let d := (d.windows.filter (·.title == marker)).foldl (fun d w => d.close w.id) d
+    return d.insert (Window.new "failed" ⟨2, 2, 20, 3⟩)
+
+def app : App JCmd := { menuBar := #[], statusLine := #[], onCommand }
+
+def init : AppState JCmd := { desktop := { bounds := ⟨0, 1, 80, 23⟩ }, screen := ⟨80, 25⟩ }
+
+def runM (st : AppState JCmd) (act : AppM JCmd Unit) : IO (AppState JCmd) :=
+  return (← (act.run app).run st).2
+
+/-- A running job whose task has already finished with `res`. -/
+def finished (res : Except IO.Error JCmd) : RunningJob JCmd := { task := Task.pure res, onError := fun _ => .failed }
+
+def has (st : AppState JCmd) (title : String) : Bool := st.desktop.windows.any (·.title == title)
+
+-- Spawning: a handler that starts a job records it and updates the desktop in one step.
+#eval show IO Unit from do
+  let st ← runM init (App.dispatch (.user .scan))
+  check (st.jobs.size == 1) "job was not recorded"
+  check (has st marker) "spinner window was not opened"
+
+-- No jobs: a handler that just returns a desktop starts nothing and behaves as before.
+#eval show IO Unit from do
+  let st ← runM init (App.dispatch (.user (.done 3)))
+  check st.jobs.isEmpty "a job-free command spawned a job"
+  check (has st "done 3") "the command did not update the desktop"
+
+-- Routing a success: a finished job delivers its value as `.done`, which closes the
+-- spinner and opens the result — and it does so past a modal window (delivery bypasses
+-- modality, since the result is often what dismisses the modal spinner itself).
+#eval show IO Unit from do
+  let st0 := { init with desktop := init.desktop.insertCentered (Window.messageBox marker "…"),
+                         jobs := #[finished (.ok (.done 7))] }
+  let st ← runM st0 App.deliverFinished
+  check st.jobs.isEmpty "the finished job was not removed"
+  check (has st "done 7" && !has st marker) "the result was not routed past the modal spinner"
+
+-- Routing a failure: a job that threw arrives as its `onError` command; the loop lives on.
+#eval show IO Unit from do
+  let st0 := { init with desktop := init.desktop.insertCentered (Window.messageBox marker "…"),
+                         jobs := #[finished (.error (IO.userError "device offline"))] }
+  let st ← runM st0 App.deliverFinished
+  check st.jobs.isEmpty "the failed job was not removed"
+  check (has st "failed" && !has st marker) "the error was not routed to the onError command"
+
+-- Several finished jobs are all delivered in one loop step, each routed through the handler.
+#eval show IO Unit from do
+  let st0 := { init with jobs := #[finished (.ok (.done 5)), finished (.ok (.done 9))] }
+  let st ← runM st0 App.deliverFinished
+  check st.jobs.isEmpty "a finished job lingered"
+  check (has st "done 5" && has st "done 9") "not every finished result was delivered"
+
+end Jobs
+
 end HyperVisionTests

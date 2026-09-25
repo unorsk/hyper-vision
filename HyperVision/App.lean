@@ -10,6 +10,12 @@ import HyperVision.Terminal
 events through the menu bar, drop-down lists, the status line and the desktop,
 tracks mouse capture for dragging/resizing windows, and repaints the screen
 through the differential renderer.
+
+A command handler may also start background `Job`s: `IO` actions that run off the
+loop (each on its own dedicated thread) so a slow device call does not freeze the
+UI. When a job finishes its result is delivered back on the main loop and
+dispatched as an ordinary application command (see `Job`, `Handled` and
+`deliverFinished`), so nothing but the loop ever touches the `Desktop`.
 -/
 
 namespace HyperVision
@@ -82,6 +88,59 @@ inductive Capture where
   | menu
 deriving BEq, Inhabited
 
+/-!
+### Background jobs
+
+`onCommand` runs synchronously inside the event loop, so anything it does directly
+blocks input and repainting. To keep the UI live during slow work a handler starts
+one or more `Job`s instead: each runs off the loop and, when it finishes, delivers a
+value back to the application that is dispatched exactly like a user command.
+-/
+
+/--
+A background job started from a command handler. `action` runs off the main event
+loop on its own dedicated thread; when it finishes the value it produces is fed back
+to the application as a command of type `α` and dispatched just as if the user had
+issued it. Reacting to a finished job is therefore only another `onCommand` case
+(close the spinner, open a results window, …), which is what keeps the whole app to a
+single command type. If `action` throws, `onError` turns the exception into a command
+instead, so a failing job is delivered as an ordinary value and never brings the loop
+down.
+-/
+structure Job (α : Type) where
+  /-- The off-loop work; its result is the command delivered on success. -/
+  action : IO α
+  /-- Turns an exception thrown by `action` into a command, so errors are values. -/
+  onError : IO.Error → α
+
+/-- Builds a job from any `IO β`, mapping success through `onOk` and a thrown exception
+through `onError`. The intermediate type `β` is a parameter, not a stored field, so a
+`Job` stays in `Type` (as `IO` requires) and the app keeps its single type parameter. -/
+def Job.of {α β : Type} (action : IO β) (onOk : β → α) (onError : IO.Error → α) : Job α :=
+  { action := onOk <$> action, onError }
+
+/--
+What a command handler returns: the desktop after the command, together with any
+background jobs to start this step. A handler that starts no jobs can simply return
+the `Desktop α` — the `Coe` below wraps it with no jobs — so a handler both updates
+the desktop and spawns work in the same step, and every pre-existing handler keeps
+working unchanged.
+-/
+structure Handled (α : Type) where
+  desktop : Desktop α
+  jobs : Array (Job α) := #[]
+
+/-- A bare desktop is a result that spawns nothing; this lets a handler `return d`. -/
+instance {α : Type} : Coe (Desktop α) (Handled α) := ⟨({ desktop := · })⟩
+
+/-- Updates the desktop and starts one job in a single result
+(`return (d.insertCentered spinner).spawn job`). -/
+def Desktop.spawn {α : Type} (d : Desktop α) (job : Job α) : Handled α := { desktop := d, jobs := #[job] }
+
+/-- Starts a further job on an existing result, so several jobs can be chained
+(`d.spawn a |>.spawn b`). -/
+def Handled.spawn {α : Type} (h : Handled α) (job : Job α) : Handled α := { h with jobs := h.jobs.push job }
+
 /-- A Turbo Vision application: menus, status line, theme and a command handler. -/
 structure App (α : Type) where
   menuBar : Array (Menu α)
@@ -90,10 +149,29 @@ structure App (α : Type) where
   statusHint : String := ""
   theme : Theme := Theme.turboVision
   /-- Handles application commands. The window whose control issued the command
-  (or the active window) is passed along so its values can be read. -/
-  onCommand : α → Option (Window α) → Desktop α → IO (Desktop α) := fun _ _ d => pure d
+  (or the active window) is passed along so its values can be read. Returns the
+  updated desktop and, optionally, background jobs to start (see `Handled`); a
+  handler that starts none may just return a `Desktop α`. -/
+  onCommand : α → Option (Window α) → Desktop α → IO (Handled α) := fun _ _ d => pure { desktop := d }
+  /-- Called on each redraw while background jobs are running, with a monotonically
+  increasing tick, so the app can advance an animation such as a spinner (drawing
+  itself is pure, so a running job needs this to change what is shown). It is never
+  called while no job runs, so behaviour without jobs is exactly as before. -/
+  onTick : Nat → Desktop α → Desktop α := fun _ d => d
   /-- Draw a DOS-style block mouse cursor (handy for screen recordings). -/
   mouseCursor : Bool := false
+
+/-- A `Job` that has been started: the task computing its (success-or-failure) result
+off the loop, and how to turn a failure into a command. -/
+structure RunningJob (α : Type) where
+  task : Task (Except IO.Error α)
+  onError : IO.Error → α
+
+/-- The command a finished job delivers: its value on success, or `onError` applied to
+the exception it threw. -/
+def RunningJob.deliver {α : Type} (rj : RunningJob α) : Except IO.Error α → α
+  | .ok a => a
+  | .error e => rj.onError e
 
 /-- The mutable part of a running application. -/
 structure AppState (α : Type) where
@@ -108,6 +186,9 @@ structure AppState (α : Type) where
   /-- Keyboard move/resize in progress: the window and its original bounds. -/
   keyDrag : Option (Nat × Rect) := none
   quit : Bool := false
+  /-- Background jobs started by command handlers that are still running. The main
+  loop polls these and delivers the results of the finished ones. -/
+  jobs : Array (RunningJob α) := #[]
 deriving Inhabited
 
 abbrev AppM (α : Type) := ReaderT (App α) (StateT (AppState α) IO)
@@ -128,8 +209,23 @@ def modalSafe : Command α → Bool
   | .quit | .close | .ok | .cancel | .zoom | .resize => true
   | _ => false
 
-def dispatch (cmd : Command α) (source : Option Nat := none) : AppM α Unit := do
+/-- Starts one background job on a dedicated thread and records it so the main loop can
+deliver its result. Only the loop touches the `Desktop`; the job produces a plain `α`. -/
+def startJob (job : Job α) : AppM α Unit := do
+  let task ← IO.asTask job.action .dedicated
+  modify fun s => { s with jobs := s.jobs.push { task, onError := job.onError } }
+
+/-- Runs the application's handler for a user command `a` (issued by a control or menu,
+or delivered by a finished job), installs the desktop it returns and starts any jobs it
+spawned. `source` is the id of the window the command came from, if any. -/
+def applyUser (a : α) (source : Option Nat) : AppM α Unit := do
   let app ← read
+  let d := (← get).desktop
+  let h ← app.onCommand a (source.bind d.find?) d
+  modify fun s => { s with desktop := h.desktop }
+  h.jobs.forM startJob
+
+def dispatch (cmd : Command α) (source : Option Nat := none) : AppM α Unit := do
   let d := (← get).desktop
   -- While a modal window is open only its own controls may issue arbitrary commands.
   if d.modalActive && source != d.top?.map (·.id) && !modalSafe cmd then return
@@ -151,9 +247,7 @@ def dispatch (cmd : Command α) (source : Option Nat := none) : AppM α Unit := 
   | .tile => modifyDesktop Desktop.tile
   | .cascade => modifyDesktop Desktop.cascade
   | .menu => modify fun s => { s with menu := some ⟨0, #[]⟩ }
-  | .user a =>
-    let d' ← app.onCommand a (target.bind d.find?) d
-    modify fun s => { s with desktop := d' }
+  | .user a => applyUser a target
 
 /-- Handles what a window reported back. -/
 def windowReply (id : Nat) : WindowReply α → AppM α Unit
@@ -566,6 +660,22 @@ def render : AppM α (Screen × Option Point) := do
 
 /-! ### Main loop -/
 
+/-- Delivers the results of any finished background jobs on the main loop, dispatching
+each through the application's handler. Delivery bypasses modality: a result must
+always reach the app, since it is often what dismisses the very (possibly modal)
+spinner that was waiting on the job. A job that threw arrives as its `onError` value,
+so a failure updates the app like any other command and never interrupts the loop. -/
+def deliverFinished : AppM α Unit := do
+  let jobs := (← get).jobs
+  let mut pending : Array (RunningJob α) := #[]
+  let mut done : Array α := #[]
+  for rj in jobs do
+    if ← IO.hasFinished rj.task then done := done.push (rj.deliver rj.task.get)
+    else pending := pending.push rj
+  modify fun s => { s with jobs := pending }
+  -- Removing the finished jobs first lets a delivered command spawn new ones cleanly.
+  for a in done do applyUser a none
+
 /--
 Runs the application until a `quit` command. `windows` are opened in order, so the
 last one starts out active.
@@ -580,12 +690,15 @@ def run (app : App α) (windows : Array (Window α)) : IO Unit := do
     let mut prev : Option Screen := none
     let mut pending := ByteArray.empty
     let mut dirty := true
+    let mut tick : Nat := 0
     repeat
       if dirty then
         let ((frame, cursor), _) ← (render.run app).run st
         Terminal.writeString (Terminal.diff mode prev frame cursor)
         prev := some frame
         dirty := false
+      -- The idle poll already returns after ~100 ms with no input, so a running job
+      -- gives the loop a steady tick without a busy-wait.
       let bytes ← Terminal.read (if pending.isEmpty then 100 else 25)
       let (evs, rest) :=
         if bytes.isEmpty then Input.decode pending (flush := true)
@@ -595,6 +708,14 @@ def run (app : App α) (windows : Array (Window α)) : IO Unit := do
       let evs := if w' != st.screen.w || h' != st.screen.h then evs.push (.resize w' h') else evs
       for ev in evs do
         st := (← ((handleEvent ev).run app).run st).2
+        dirty := true
+      -- Deliver finished jobs and, while any remain, animate at the poll cadence.
+      -- Nothing here runs when no job was started, so behaviour is otherwise unchanged.
+      if !st.jobs.isEmpty then
+        st := (← (deliverFinished.run app).run st).2
+        if !st.jobs.isEmpty then
+          tick := tick + 1
+          st := { st with desktop := app.onTick tick st.desktop }
         dirty := true
       if st.quit then break
 
