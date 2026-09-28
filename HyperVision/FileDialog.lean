@@ -69,6 +69,8 @@ directory lists only `..`. -/
 def readDirectory (dir wildcard : String) : IO (Array FileEntry) := do
   let zone ← localZone
   let raw ← try System.FilePath.readDir dir catch _ => pure #[]
+  -- The wildcard is split once, not once per entry.
+  let pats := (wildcardPatterns wildcard).map String.toList
   let mut out : Array FileEntry := #[]
   for e in raw do
     let name := e.fileName
@@ -76,12 +78,12 @@ def readDirectory (dir wildcard : String) : IO (Array FileEntry) := do
     -- `metadata` follows symbolic links, so a link to a directory is listed as one.
     match ← (try some <$> e.path.metadata catch _ => pure none) with
     | some md =>
-      if md.type == .dir || matchesWildcard wildcard name then
+      if md.type == .dir || matchesPatterns pats name then
         out := out.push { name, isDir := md.type == .dir, size := md.byteSize.toNat
                           modified := some (localTime zone md.modified) }
     | none =>
       -- A dangling link: listed as a file, without size or date.
-      if matchesWildcard wildcard name then out := out.push { name }
+      if matchesPatterns pats name then out := out.push { name }
   if dir != "/" then out := out.push FileEntry.parent
   return FileEntry.sort out
 

@@ -90,22 +90,21 @@ def statusLine : Array (StatusItem Cmd) := #[
   StatusItem.new "~Alt-F3~ Close" ⟨.f 3, { alt := true }⟩ .close,
   StatusItem.new "~F10~ Menu" (KeyEvent.plain (.f 10)) .menu]
 
-/-- The directory tree the file dialog starts in (sessions may leave it through `..`). -/
-def fuzzRoot : String := "/tmp/hyper-vision-fuzz"
-
-/-- Creates the tree: a subdirectory chain, a directory with more files than fit in the
-list, long and non-ASCII names, and a hidden file. -/
-def ensureTree : IO Unit := do
-  IO.FS.createDirAll (fuzzRoot ++ "/sub/deeper")
-  IO.FS.createDirAll (fuzzRoot ++ "/many")
-  for i in [0:45] do IO.FS.writeFile (fuzzRoot ++ s!"/many/file{i}.txt") ""
+/-- Fills `root`, the directory tree the file dialog starts in (sessions may leave it
+through `..`): a subdirectory chain, a directory with more files than fit in the list,
+long and non-ASCII names, and a hidden file. -/
+def ensureTree (root : String) : IO Unit := do
+  IO.FS.createDirAll (root ++ "/sub/deeper")
+  IO.FS.createDirAll (root ++ "/many")
+  for i in [0:45] do IO.FS.writeFile (root ++ s!"/many/file{i}.txt") ""
   for n in ["a.txt", "b.lean", "a name much longer than any column.md", "é中.txt", ".hidden",
       "sub/c.txt", "sub/deeper/d.txt"] do
-    IO.FS.writeFile (fuzzRoot ++ "/" ++ n) n
+    IO.FS.writeFile (root ++ "/" ++ n) n
 
-def onCommand (cmd : Cmd) (source : Option (Window Cmd)) (d : Desktop Cmd) : IO (Handled Cmd) := do
+def onCommand (root : String) (cmd : Cmd) (source : Option (Window Cmd)) (d : Desktop Cmd) :
+    IO (Handled Cmd) := do
   if cmd == .openFile then
-    return d.insertCentered (← Window.fileDialog "Open a File" .fileChosen fuzzRoot)
+    return d.insertCentered (← Window.fileDialog "Open a File" .fileChosen root)
   -- No jobs here; the `Desktop → Handled` coercion supplies the empty job list.
   let d' : Desktop Cmd := match cmd with
   | .about => d.insertCentered (Window.messageBox "About" "^CHyper Vision\n\nA modal box.")
@@ -129,7 +128,8 @@ def onCommand (cmd : Cmd) (source : Option (Window Cmd)) (d : Desktop Cmd) : IO 
   | .openFile | .fileChosen => d
   return d'
 
-def app : App Cmd := { menuBar, statusLine, onCommand }
+/-- The application under test, opening its file dialog in `root`. -/
+def app (root : String) : App Cmd := { menuBar, statusLine, onCommand := onCommand root }
 
 def initial (w h : Nat) : AppState Cmd :=
   let screen : Size := ⟨w, h⟩
@@ -168,7 +168,8 @@ def captureWindow? : Capture → Option Nat
   | _ => none
 
 /-- Everything that must hold between events. `before` is the state the event was applied to. -/
-def issues (before : AppState Cmd) (ev : Event) (st : AppState Cmd) : IO (List String) := do
+def issues (app : App Cmd) (before : AppState Cmd) (ev : Event) (st : AppState Cmd) :
+    IO (List String) := do
   let d := st.desktop
   let desk := App.desktopRect st.screen
   let exists_ (id : Nat) := (d.find? id).isSome
@@ -301,7 +302,7 @@ def typed (text : String) : List Event := text.toList.map fun c => .key (.plain 
 
 /-- A gesture aimed at a file dialog: moving through and searching its list, clicking and
 double-clicking entries and the scroll bar, typing names, paths and wildcards. -/
-def genDialogGesture (w : Window Cmd) (i : Nat) : Rnd (List Event) := do
+def genDialogGesture (root : String) (w : Window Cmd) (i : Nat) : Rnd (List Event) := do
   let some c := w.controls[i]? | return []
   let r := w.boundsOf c
   let o : Point := w.bounds.origin + ⟨1, 1⟩ + r.origin
@@ -330,13 +331,13 @@ def genDialogGesture (w : Window Cmd) (i : Nat) : Rnd (List Event) := do
     return [mouse p .left .press, mouse q .left .drag, mouse q .left .release]
   | _ =>
     let text ← oneOf #["*.txt", "..", "../", "sub", "sub/deeper/*", "many", "*", "b.lean", "/", "~nope/x",
-      "/tmp/hyper-vision-fuzz", "a.txt", "?.txt;*.md", ""]
+      root, "a.txt", "?.txt;*.md", ""]
     return [.key ⟨.char 'n', { alt := true }⟩] ++ typed text ++ [.key (.plain .enter)]
 
 /-- A gesture: a click, a drag, a wheel turn, a key press, a resize, … -/
-def genGesture (st : AppState Cmd) : Rnd (List Event) := do
+def genGesture (root : String) (st : AppState Cmd) : Rnd (List Event) := do
   match st.desktop.top? >>= fun w => (FileDialog.list? w).map (w, ·.1) with
-  | some (w, i) => if ← chance 60 then return ← genDialogGesture w i
+  | some (w, i) => if ← chance 60 then return ← genDialogGesture root w i
   | none => if ← chance 8 then return [.key (.plain (.f 2))]
   let n ← rnd 0 99
   if n < 45 then return [.key (← genKey)]
@@ -383,26 +384,28 @@ def showEvent : Event → String
   | .resize w h => s!"resize {w}x{h}"
 
 /-- The state a session starts in: every other session starts with a file dialog open. -/
-def start (session : Nat) : IO (AppState Cmd) := do
+def start (app : App Cmd) (session : Nat) : IO (AppState Cmd) := do
   let st := initial 80 25
   if session % 2 == 0 then return st
   return (← ((App.dispatch (.user .openFile)).run app).run st).2
 
 /-- Plays `evs` from `st`; the first violation, if any, with its position. -/
-def replay (st : AppState Cmd) (evs : Array Event) : IO (Option (Nat × List String)) := do
+def replay (app : App Cmd) (st : AppState Cmd) (evs : Array Event) :
+    IO (Option (Nat × List String)) := do
   let mut st := st
   for h : i in [0:evs.size] do
     let before := st
     st := (← ((App.handleEvent evs[i]).run app).run st).2
     st := { st with quit := false }
-    let errs ← issues before evs[i] st
+    let errs ← issues app before evs[i] st
     unless errs.isEmpty do return some (i, errs)
   return none
 
 /-- Removes chunks of events while the failure (same first message) persists. -/
-def shrink (st : AppState Cmd) (evs : Array Event) (msg : String) : IO (Array Event) := do
+def shrink (app : App Cmd) (st : AppState Cmd) (evs : Array Event) (msg : String) :
+    IO (Array Event) := do
   let fails (xs : Array Event) : IO Bool := do
-    return match ← replay st xs with
+    return match ← replay app st xs with
       | some (_, e :: _) => e == msg
       | _ => false
   let mut evs := evs
@@ -415,25 +418,28 @@ def shrink (st : AppState Cmd) (evs : Array Event) (msg : String) : IO (Array Ev
     chunk := chunk / 2
   return evs
 
-/-- Runs `sessions` random sessions of `length` gestures each, from `seed`. -/
-def fuzz (seed sessions length : Nat) : IO Unit := do
-  ensureTree
+/-- Runs `sessions` random sessions of `length` gestures each, from `seed`, in a fresh
+temporary directory that is removed again afterwards. -/
+def fuzz (seed sessions length : Nat) : IO Unit := IO.FS.withTempDir fun dir => do
+  let root := (← IO.FS.realPath dir).toString
+  ensureTree root
+  let app := app root
   for s in [0:sessions] do
     let mut g := mkStdGen (seed + s)
-    let st₀ ← start (seed + s)
+    let st₀ ← start app (seed + s)
     let mut st := st₀
     let mut trace : Array Event := #[]
     for _ in [0:length] do
-      let (evs, g') := (genGesture st).run g
+      let (evs, g') := (genGesture root st).run g
       g := g'
       for ev in evs do
         let before := st
         st := (← ((App.handleEvent ev).run app).run st).2
         st := { st with quit := false }
         trace := trace.push ev
-        let errs ← issues before ev st
+        let errs ← issues app before ev st
         if let e :: _ := errs then
-          let small ← shrink st₀ trace e
+          let small ← shrink app st₀ trace e
           throw <| IO.userError <| s!"session {seed + s}: {e}\nafter {small.size} events:\n  " ++
             "\n  ".intercalate (small.toList.map showEvent)
 

@@ -24,6 +24,10 @@ def check (ok : Bool) (msg : String) : IO Unit := unless ok do throw (IO.userErr
 #guard matchesWildcard "*.lean; *.md" "README.md" && !matchesWildcard "*.lean; *.md" "lakefile.toml"
 #guard !matchesWildcard "" "anything" && !matchesWildcard " ; " "anything"
 #guard isWild "src/*.lean" && isWild "a?" && !isWild "Main.lean"
+-- Several stars do not make matching backtrack: the plain recursive matcher takes hours
+-- on this one, the dynamic program a fraction of a millisecond.
+#guard !matchesWildcard "*a*a*a*a*a*a*a*a*b" (String.ofList (List.replicate 200 'a'))
+#guard matchesWildcard "*a*a*a*a*a*a*a*a*b" (String.ofList (List.replicate 200 'a' ++ ['b']))
 
 /-! ## Order: files, then directories, then `..`, each by name -/
 
@@ -65,6 +69,39 @@ def press (l : FileList) (k : KeyEvent) : FileList := (l.handleKey sz k).1
 #guard (press (numbered 40) (.plain .end)).focused == 15
 -- Space (like a double click) activates the focused entry.
 #guard match ((numbered 3).handleKey sz (.plain (.char ' '))).2 with | .activated => true | _ => false
+
+/-! ## Drawing -/
+
+/-- A file list drawn on its own, into a screen two cells wider and a row taller that is
+filled with `×`, so that anything drawn outside the control shows up. -/
+def drawn (l : FileList) (s : Size) : Screen :=
+  let t : Theme := Theme.turboVision
+  let ctx : DrawCtx := { theme := t, size := s, focused := true, window := t.grayWindow }
+  Draw.run (Screen.new (s.w + 2) (s.h + 1) { ch := '×' })
+    (Draw.within ⟨0, 0, s.w, s.h⟩ (FileList.draw l ctx))
+
+/-- Row `y` of a drawn list, split at the column divider and trimmed. -/
+def drawnRow (l : FileList) (s : Size) (y : Nat) : List String :=
+  let row := String.ofList ((List.range s.w).filterMap fun x : Nat =>
+    ((drawn l s).get? x y).map (·.ch))
+  (row.splitOn "│").map FileDialog.trimBlanks
+
+/-- Whether the list left every cell outside itself alone. -/
+def drawnConfined (l : FileList) (s : Size) : Bool :=
+  (List.range (s.h + 1)).all fun y => (List.range (s.w + 2)).all fun x =>
+    (x < s.w && y < s.h) || ((drawn l s).get? x y).map (·.ch) == some '×'
+
+-- Two columns of entries, `rows` of them, separated by a divider.
+#guard drawnRow (numbered 40) sz 0 == ["f0", "f8"]
+#guard drawnRow (numbered 40) sz 7 == ["f7", "f15"]
+-- A list one row tall still lists entries: the scroll bar only takes a row of its own
+-- once there are two.
+#guard drawnRow (numbered 40) ⟨31, 1⟩ 0 == ["f0", "f1"]
+#guard drawnRow (numbered 0) ⟨31, 1⟩ 0 == ["<empty>", ""]
+-- The columns are together one cell wider than the list, so that the last one has no
+-- divider (as `TListViewer` does); that cell lies outside the control and is clipped.
+#guard drawnConfined (numbered 40) sz && drawnConfined (numbered 40) ⟨30, 9⟩
+#guard drawnConfined (numbered 40) ⟨31, 1⟩ && drawnConfined (numbered 3) ⟨1, 2⟩
 
 /-! ## Type-ahead -/
 

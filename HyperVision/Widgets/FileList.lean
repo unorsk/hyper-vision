@@ -74,8 +74,15 @@ end FileEntry
 
 /-! ## Wildcards -/
 
-/-- Whether `name` matches the pattern `pat`: `*` matches any run of characters and `?`
-any single character. -/
+/--
+Whether `name` matches the pattern `pat`: `*` matches any run of characters and `?`
+any single character.
+
+This reads as the specification and is what the theorems below are stated about, but it
+backtracks, and does so exponentially on patterns with several `*` (`*a*a*a*b` against a
+run of `a`s). `globMatchFast` computes the same function in `pat.length * name.length`
+steps and replaces it in compiled code (`@[csimp]` below).
+-/
 def globMatch : List Char → List Char → Bool
   | [], s => s.isEmpty
   | '*' :: p, s =>
@@ -87,6 +94,100 @@ def globMatch : List Char → List Char → Bool
   | _ :: _, [] => false
 termination_by p s => p.length + s.length
 
+/-! ### Matching without backtracking
+
+`globMatchFast` fills in the table of `globMatch q t` for every suffix `q` of the pattern
+and every suffix `t` of the name, one row (one `t`) at a time: `globRowNil` is the row of
+the empty name and `globRowCons` the step from the row of `t` to the row of `c :: t`. A
+row is built from the right, so that the entries for the shorter pattern suffixes it
+depends on are already at hand; the whole table costs one pass over the pattern per
+character of the name.
+-/
+
+/-- The first entry of a row; the rows below are never empty. -/
+def globHead (row : List Bool) : Bool := row.headD false
+
+/-- The row of the table for the name `s`: `globMatch q s` for `p` and each of its
+suffixes `q`, longest first. This is what the two functions below compute. -/
+def globSpecRow (s : List Char) : List Char → List Bool
+  | [] => [globMatch [] s]
+  | c :: p => globMatch (c :: p) s :: globSpecRow s p
+
+theorem globSpecRow_head (s p : List Char) : globHead (globSpecRow s p) = globMatch p s := by
+  cases p <;> rfl
+
+theorem globSpecRow_tail (s : List Char) (c : Char) (p : List Char) :
+    (globSpecRow s (c :: p)).tail = globSpecRow s p := rfl
+
+/-- The row of the empty name: a pattern matches it exactly when it is all stars. -/
+def globRowNil : List Char → List Bool
+  | [] => [true]
+  | c :: p =>
+    let rest := globRowNil p
+    ((c == '*') && globHead rest) :: rest
+
+/-- The row of `c :: s`, from the row `prev` of `s`. -/
+def globRowCons (c : Char) : List Char → List Bool → List Bool
+  | [], _ => [false]
+  | d :: p, prev =>
+    let rest := globRowCons c p prev.tail
+    let here :=
+      if d == '*' then globHead rest || globHead prev
+      else if d == '?' then globHead prev.tail
+      else d == c && globHead prev.tail
+    here :: rest
+
+/-- `globMatch` by dynamic programming: one row per character of the name. -/
+def globMatchFast (p s : List Char) : Bool :=
+  globHead (s.foldr (fun c row => globRowCons c p row) (globRowNil p))
+
+theorem globMatch_nil_right (c : Char) (p : List Char) :
+    globMatch (c :: p) [] = ((c == '*') && globMatch p []) := by
+  by_cases h : c = '*'
+  · subst h; rw [globMatch]; simp
+  · rw [globMatch] <;> simp [h]
+
+theorem globRowNil_eq (p : List Char) : globRowNil p = globSpecRow [] p := by
+  induction p with
+  | nil => simp [globRowNil, globSpecRow, globMatch]
+  | cons c p ih =>
+    show ((c == '*') && globHead (globRowNil p)) :: globRowNil p = _
+    rw [ih, globSpecRow_head, globSpecRow, globMatch_nil_right]
+
+theorem globRowCons_eq (c : Char) (s : List Char) :
+    ∀ p : List Char, globRowCons c p (globSpecRow s p) = globSpecRow (c :: s) p := by
+  intro p
+  induction p with
+  | nil => simp [globRowCons, globSpecRow, globMatch]
+  | cons d p ih =>
+    have h1 : globHead (globSpecRow (c :: s) p) = globMatch p (c :: s) := globSpecRow_head ..
+    have h2 : globHead (globSpecRow s (d :: p)) = globMatch (d :: p) s := globSpecRow_head ..
+    show (if d == '*' then globHead (globRowCons c p (globSpecRow s (d :: p)).tail) ||
+            globHead (globSpecRow s (d :: p))
+          else if d == '?' then globHead (globSpecRow s (d :: p)).tail
+          else d == c && globHead (globSpecRow s (d :: p)).tail)
+        :: globRowCons c p (globSpecRow s (d :: p)).tail = _
+    rw [globSpecRow_tail, ih, h1, h2, globSpecRow_head, globSpecRow]
+    congr 1
+    by_cases h₁ : d = '*'
+    · subst h₁; rw [globMatch]; simp
+    · by_cases h₂ : d = '?'
+      · subst h₂; rw [globMatch]; simp
+      · rw [globMatch] <;> simp [h₁, h₂]
+
+theorem globFoldr_eq (p s : List Char) :
+    s.foldr (fun c row => globRowCons c p row) (globRowNil p) = globSpecRow s p := by
+  induction s with
+  | nil => simpa using globRowNil_eq p
+  | cons c s ih => simpa only [List.foldr_cons, ih] using globRowCons_eq c s p
+
+theorem globMatchFast_eq (p s : List Char) : globMatchFast p s = globMatch p s := by
+  rw [globMatchFast, globFoldr_eq, globSpecRow_head]
+
+/-- Compiled code matches wildcards with `globMatchFast`. -/
+@[csimp] theorem globMatch_eq_globMatchFast : @globMatch = @globMatchFast := by
+  funext p s; exact (globMatchFast_eq p s).symm
+
 /-- Whether a name contains wildcard characters. -/
 def isWild (s : String) : Bool := s.any fun c => c == '*' || c == '?'
 
@@ -96,9 +197,20 @@ def wildcardPatterns (wildcard : String) : List String :=
     let cs := (p.toList.dropWhile (· == ' ')).reverse.dropWhile (· == ' ') |>.reverse
     if cs.isEmpty then none else some (String.ofList cs)
 
+/-- Whether `name` matches one of `pats`, patterns already split into characters:
+`readDirectory` splits the wildcard once and matches every entry against the result. -/
+def matchesPatterns (pats : List (List Char)) (name : String) : Bool :=
+  let cs := name.toList
+  pats.any fun p => globMatch p cs
+
 /-- Whether `name` matches one of the patterns of `wildcard`. -/
 def matchesWildcard (wildcard name : String) : Bool :=
-  (wildcardPatterns wildcard).any fun p => globMatch p.toList name.toList
+  matchesPatterns ((wildcardPatterns wildcard).map String.toList) name
+
+theorem matchesWildcard_eq (wildcard name : String) :
+    matchesWildcard wildcard name =
+      (wildcardPatterns wildcard).any fun p => globMatch p.toList name.toList := by
+  simp [matchesWildcard, matchesPatterns, List.any_map, Function.comp_def]
 
 /-! ## The file list -/
 
@@ -275,10 +387,13 @@ def draw (l : FileList) (ctx : DrawCtx) : DrawM Unit := do
   let l := l.adjust s
   let r := rows s
   let cw := colWidth s
-  for y in [0:s.h - 1] do
+  for y in [0:r] do
     for j in [0:columns] do
       let item := l.top + j * r + y
       let x0 := j * cw
+      -- As `TListViewer` does, the columns together are one cell wider than the list, so
+      -- that the last one has no divider: the extra cell falls outside the control and is
+      -- clipped away (`DrawM` cannot touch it).
       let width := if j + 1 == columns then s.w - x0 + 1 else cw
       let attr :=
         if item == l.focused && item < l.entries.size then
