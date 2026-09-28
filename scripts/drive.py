@@ -23,7 +23,7 @@ KEYS = {
     "shift-up": "\x1b[1;2A", "shift-down": "\x1b[1;2B",
     "shift-right": "\x1b[1;2C", "shift-left": "\x1b[1;2D",
     "home": "\x1b[H", "end": "\x1b[F", "delete": "\x1b[3~", "space": " ",
-    "f3": "\x1bOR", "f4": "\x1bOS", "f5": "\x1b[15~", "f6": "\x1b[17~", "f10": "\x1b[21~",
+    "f2": "\x1bOQ", "f3": "\x1bOR", "f4": "\x1bOS", "f5": "\x1b[15~", "f6": "\x1b[17~", "f10": "\x1b[21~",
     "alt-f3": "\x1b[1;3R", "shift-f6": "\x1b[17;2~", "alt-x": "\x1bx",
     "ctrl-end": "\x1b[1;5F", "ctrl-home": "\x1b[1;5H",
 }
@@ -166,7 +166,19 @@ def tour(d, snap=lambda name: None):
     d.click(26, 0, pause=0.5)
     d.click(28, 2, pause=2.0)
     snap("about")
-    d.click(49, 17, pause=1.5)
+    d.click(49, 17, pause=1.0)
+    # File > Open: list the Lean files, walk the list (the pane below follows), open a
+    # directory with a double click, find a file by typing its name, open it.
+    d.key("f2", 1.0)
+    d.type("*.lean", pause=0.3)
+    d.key("enter", 0.8)
+    for _ in range(3):
+        d.key("down", 0.4)
+    snap("file_dialog")
+    d.click(30, 15, double=True, pause=1.2)
+    d.type("Fi", cps=4, pause=0.8)
+    snap("file_search")
+    d.key("enter", 2.0)
     snap("end")
 
 

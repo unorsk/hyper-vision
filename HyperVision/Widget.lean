@@ -37,6 +37,10 @@ inductive Command (α : Type) where
   | ok
   /-- Dismiss the dialog the command came from. -/
   | cancel
+  /-- The `Open` button of a file dialog: a directory or wildcard in its file name field
+  is opened in the dialog; a file closes the dialog and issues `user a`, whose handler
+  reads the file with `FileDialog.path?`. -/
+  | fileOpen (a : α)
   | user (a : α)
 deriving BEq, Repr, Inhabited
 
@@ -64,6 +68,9 @@ inductive Reply where
   | focus (name : String)
   /-- Open a drop-down list under `anchor` (widget-local) highlighting `current`. -/
   | dropDown (anchor : Rect) (items : Array String) (current : Nat)
+  /-- The widget's value changed; the window updates the controls that show it (a file
+  list's file name field and information pane). -/
+  | changed
 deriving BEq, Repr, Inhabited
 
 class Widget (W : Type) where

@@ -4,6 +4,7 @@ import HyperVision.Widgets.Cluster
 import HyperVision.Widgets.InputLine
 import HyperVision.Widgets.ComboBox
 import HyperVision.Widgets.Memo
+import HyperVision.Widgets.FileList
 
 /-!
 # Controls
@@ -24,6 +25,8 @@ inductive ControlKind (α : Type) where
   | inputLine (w : InputLine)
   | comboBox (w : ComboBox)
   | memo (w : Memo)
+  | fileList (w : FileList)
+  | fileInfo (w : FileInfo)
 deriving Inhabited
 
 namespace ControlKind
@@ -42,6 +45,8 @@ variable {α β : Type}
   | inputLine w => f w inputLine
   | comboBox w => f w comboBox
   | memo w => f w memo
+  | fileList w => f w fileList
+  | fileInfo w => f w fileInfo
 
 def draw (k : ControlKind α) (ctx : DrawCtx) : DrawM Unit :=
   k.withWidget fun w _ => Widget.draw w ctx
@@ -150,6 +155,12 @@ def comboBox (name : String) (x y : Int) (w : Nat) (items : Array String)
 def memo (name : String) (bounds : Rect) (text : String := "") (grow : GrowMode := {})
     (scrollBar := true) : Control α :=
   { name, bounds, grow, kind := .memo { Memo.ofString text with scrollBar } }
+
+def fileList (name : String) (bounds : Rect) (list : FileList) (grow : GrowMode := {}) : Control α :=
+  { name, bounds, grow, kind := .fileList list }
+
+def fileInfo (bounds : Rect) (grow : GrowMode := {}) : Control α :=
+  { bounds, grow, kind := .fileInfo {} }
 
 /-! ### Reading values -/
 

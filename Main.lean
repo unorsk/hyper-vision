@@ -4,7 +4,8 @@ import HyperVision
 # hyper-vision demo
 
 A Turbo Vision style desktop: menu bar with drop-downs and a sub-menu, status
-line, a text editor window and a dialog with every kind of control.
+line, a text editor window, a dialog with every kind of control, and a file dialog
+that opens files in editor windows.
 -/
 
 open HyperVision
@@ -13,6 +14,10 @@ open HyperVision
 inductive DemoCmd where
   | newEditor
   | openControls
+  /-- Show the file dialog. -/
+  | openFile
+  /-- Issued by the file dialog when a file was chosen. -/
+  | fileChosen
   | about
   | showValues
   | insert (text : String)
@@ -39,6 +44,7 @@ def main : IO Unit :=
 --   * drag a window by its title bar
 --   * resize it from the bottom-right corner
 --   * double-click a title bar to zoom
+--   * F2 opens a file in a new editor window
 --   * F10 or a click opens the menus
 --   * Tab / Shift-Tab walk through a dialog
 --   * Alt+letter jumps to a control"
@@ -76,7 +82,8 @@ def menuBar : Array (Menu DemoCmd) := #[
     MenuItem.item "~C~ontrols..." (.user .openControls)],
   Menu.new "~F~ile" #[
     MenuItem.item "~N~ew" (.user .newEditor) (some (KeyEvent.plain (.f 4))),
-    MenuItem.item "~O~pen controls..." (.user .openControls) (some (KeyEvent.plain (.f 3))),
+    MenuItem.item "~O~pen..." (.user .openFile) (some (KeyEvent.plain (.f 2))),
+    MenuItem.item "Open ~c~ontrols..." (.user .openControls) (some (KeyEvent.plain (.f 3))),
     MenuItem.item "~S~can (async)" (.user .scan) (some (KeyEvent.plain (.f 7))),
     .separator,
     MenuItem.item "E~x~it" .quit (some (KeyEvent.alt 'x'))],
@@ -105,6 +112,7 @@ def menuBar : Array (Menu DemoCmd) := #[
 
 def statusLine : Array (StatusItem DemoCmd) := #[
   StatusItem.new "~Alt-X~ Exit" (KeyEvent.alt 'x') .quit,
+  StatusItem.new "~F2~ Open" (KeyEvent.plain (.f 2)) (.user .openFile),
   StatusItem.new "~F3~ Controls" (KeyEvent.plain (.f 3)) (.user .openControls),
   StatusItem.new "~F4~ New" (KeyEvent.plain (.f 4)) (.user .newEditor),
   StatusItem.new "~F5~ Zoom" (KeyEvent.plain (.f 5)) .zoom,
@@ -124,6 +132,37 @@ def summarize (w : Window DemoCmd) : String :=
   s!"Name:     {text "name"}\nLanguage: {text "lang"}\nStyle:    {", ".intercalate styleNames.toList}\n" ++
   s!"Size:     {#["Small", "Medium", "Large"][size]?.getD "?"}\nNotes:    {lines} lines"
 
+/-- Files larger than this are not opened in an editor window. -/
+def maxFileSize : Nat := 1024 * 1024
+
+/-- Tabs expanded to spaces (tab stops every 8 columns), carriage returns dropped. -/
+def expandTabs (text : String) : String := Id.run do
+  let mut out := ""
+  let mut col := 0
+  for c in text.toList do
+    if c == '\n' then
+      out := out.push c
+      col := 0
+    else if c == '\t' then
+      out := out.pushn ' ' (8 - col % 8)
+      col := col + (8 - col % 8)
+    else if c != '\r' then
+      out := out.push c
+      col := col + 1
+  return out
+
+/-- Opens the file at `path` in a new editor window, or explains why it cannot. -/
+def openInEditor (path : String) (d : Desktop DemoCmd) : IO (Desktop DemoCmd) := do
+  let name := (System.FilePath.mk path).fileName.getD path
+  let fail (why : String) := d.insertCentered (Window.messageBox "Open" s!"^CCannot open {name}:\n^C{why}")
+  try
+    let size := (← System.FilePath.metadata path).byteSize.toNat
+    if size > maxFileSize then return fail "it is larger than 1 MB."
+    let some text := String.fromUTF8? (← IO.FS.readBinFile path) | return fail "it is not UTF-8 text."
+    let k : Int := d.windows.size
+    return d.insert (Window.editorWindow name ⟨2 + 2 * k, 2 + k, 64, 18⟩ (expandTabs text))
+  catch e => return fail (toString e)
+
 /-- Braille spinner frames; `onTick` cycles through them while the scan runs. -/
 def spinnerFrames : Array Char := #['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
 
@@ -139,6 +178,11 @@ def onCommand (cmd : DemoCmd) (source : Option (Window DemoCmd)) (d : Desktop De
     match d.windows.find? (·.title == "Controls") with
     | some w => return d.raise w.id
     | none => return d.insertCentered controlsDialog
+  | .openFile => return d.insertCentered (← Window.fileDialog "Open a File" .fileChosen)
+  | .fileChosen =>
+    match source.bind FileDialog.path? with
+    | some path => return (← openInEditor path d)
+    | none => return d
   | .newEditor =>
     let k : Int := d.windows.size
     return d.insert (Window.editorWindow "Untitled.lean" ⟨2 + 2 * k, 2 + k, 40, 12⟩ "")

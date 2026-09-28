@@ -13,12 +13,14 @@ import HyperVision.Widgets.Cluster
 import HyperVision.Widgets.InputLine
 import HyperVision.Widgets.ComboBox
 import HyperVision.Widgets.Memo
+import HyperVision.Widgets.FileList
 import HyperVision.Control
 import HyperVision.Window
 import HyperVision.Menu
 import HyperVision.Desktop
 import HyperVision.App
 import HyperVision.Dialogs
+import HyperVision.FileDialog
 import HyperVision.Proofs.Draw
 import HyperVision.Proofs.App
 import HyperVision.Proofs.Render
@@ -27,3 +29,4 @@ import HyperVision.Proofs.Widgets
 import HyperVision.Proofs.Window
 import HyperVision.Proofs.Menu
 import HyperVision.Proofs.Input
+import HyperVision.Proofs.FileList
