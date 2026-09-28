@@ -123,17 +123,39 @@ theorem FocusValid.updateKind {w : Window α} (h : w.FocusValid) (i : Nat) (k : 
     (hk : ∀ c ∈ w.controls[i]?, k.focusable = c.kind.focusable) : (w.updateKind i k).FocusValid :=
   fun j hj => (focusable_updateKind w i k hk j).trans (h j hj)
 
+/-- Showing a changed value in other controls never changes what can take the focus. -/
+theorem focusable_changed (w : Window α) (i j : Nat) : (w.changed i).focusable j = w.focusable j := by
+  unfold Window.changed
+  split
+  · simp only [focusable, Array.getElem?_mapIdx]
+    cases w.controls[j]? with
+    | none => rfl
+    | some c =>
+      obtain ⟨name, b, g, k⟩ := c
+      cases k <;> simp only [Option.map_some] <;> (try split) <;> rfl
+  · rfl
+
+theorem FocusValid.changed {w : Window α} (h : w.FocusValid) (i : Nat) : (w.changed i).FocusValid := by
+  intro j hj
+  have hf : (w.changed i).focus = w.focus := by unfold Window.changed; split <;> rfl
+  rw [focusable_changed]
+  exact h j (hf ▸ hj)
+
 theorem FocusValid.applyReply {w : Window α} (h : w.FocusValid) (i : Nat) (r : Reply) :
     (w.applyReply i r).1.FocusValid := by
   unfold Window.applyReply
   split
   · exact h
   · exact h
-  · split <;> exact h
+  · split
+    · exact h
+    · dsimp only
+      split <;> exact h.changed i
   · split
     · exact h.setFocus _
     · exact h
   · exact h
+  · exact h.changed i
 
 theorem FocusValid.dispatchHotkey {w : Window α} (h : w.FocusValid) {ch : Char}
     {res : Window α × WindowReply α} (hres : w.dispatchHotkey ch = some res) : res.1.FocusValid := by

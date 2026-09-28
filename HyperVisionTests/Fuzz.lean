@@ -16,6 +16,8 @@ after every single event that the whole state is consistent:
 * menus, drop-down lists, mouse captures and keyboard drags refer to things that
   exist, and a capture ends with the button release;
 * a modal window stays in front until it is closed, and no menu opens over it;
+* a file dialog's list keeps its focus on one of its entries, and its information
+  pane describes that entry;
 * the frame has the screen's size, the cursor is inside the active window, and the
   active window is drawn exactly as it draws itself (nothing leaks on top of it).
 
@@ -31,6 +33,7 @@ open HyperVision
 inductive Cmd where
   | newEditor | openControls | about | showValues
   | insert (text : String)
+  | openFile | fileChosen
 deriving BEq, Inhabited
 
 def controlsDialog : Window Cmd :=
@@ -57,6 +60,7 @@ def menuBar : Array (Menu Cmd) := #[
   Menu.new "~F~ile" #[
     MenuItem.item "~N~ew" (.user .newEditor) (some (KeyEvent.plain (.f 4))),
     MenuItem.item "~O~pen controls..." (.user .openControls) (some (KeyEvent.plain (.f 3))),
+    MenuItem.item "Open ~f~ile..." (.user .openFile) (some (KeyEvent.plain (.f 2))),
     .separator,
     MenuItem.item "E~x~it" .quit (some (KeyEvent.alt 'x'))],
   Menu.new "~E~dit" #[
@@ -78,6 +82,7 @@ def menuBar : Array (Menu Cmd) := #[
 
 def statusLine : Array (StatusItem Cmd) := #[
   StatusItem.new "~Alt-X~ Exit" (KeyEvent.alt 'x') .quit,
+  StatusItem.new "~F2~ Open" (KeyEvent.plain (.f 2)) (.user .openFile),
   StatusItem.new "~F3~ Controls" (KeyEvent.plain (.f 3)) (.user .openControls),
   StatusItem.new "~F4~ New" (KeyEvent.plain (.f 4)) (.user .newEditor),
   StatusItem.new "~F5~ Zoom" (KeyEvent.plain (.f 5)) .zoom,
@@ -85,7 +90,22 @@ def statusLine : Array (StatusItem Cmd) := #[
   StatusItem.new "~Alt-F3~ Close" ⟨.f 3, { alt := true }⟩ .close,
   StatusItem.new "~F10~ Menu" (KeyEvent.plain (.f 10)) .menu]
 
+/-- The directory tree the file dialog starts in (sessions may leave it through `..`). -/
+def fuzzRoot : String := "/tmp/hyper-vision-fuzz"
+
+/-- Creates the tree: a subdirectory chain, a directory with more files than fit in the
+list, long and non-ASCII names, and a hidden file. -/
+def ensureTree : IO Unit := do
+  IO.FS.createDirAll (fuzzRoot ++ "/sub/deeper")
+  IO.FS.createDirAll (fuzzRoot ++ "/many")
+  for i in [0:45] do IO.FS.writeFile (fuzzRoot ++ s!"/many/file{i}.txt") ""
+  for n in ["a.txt", "b.lean", "a name much longer than any column.md", "é中.txt", ".hidden",
+      "sub/c.txt", "sub/deeper/d.txt"] do
+    IO.FS.writeFile (fuzzRoot ++ "/" ++ n) n
+
 def onCommand (cmd : Cmd) (source : Option (Window Cmd)) (d : Desktop Cmd) : IO (Handled Cmd) := do
+  if cmd == .openFile then
+    return d.insertCentered (← Window.fileDialog "Open a File" .fileChosen fuzzRoot)
   -- No jobs here; the `Desktop → Handled` coercion supplies the empty job list.
   let d' : Desktop Cmd := match cmd with
   | .about => d.insertCentered (Window.messageBox "About" "^CHyper Vision\n\nA modal box.")
@@ -106,6 +126,7 @@ def onCommand (cmd : Cmd) (source : Option (Window Cmd)) (d : Desktop Cmd) : IO 
         | .memo m => { c with kind := .memo (m.insertText text) }
         | _ => c
     | none => d
+  | .openFile | .fileChosen => d
   return d'
 
 def app : App Cmd := { menuBar, statusLine, onCommand }
@@ -137,6 +158,9 @@ def controlIssues (c : Control Cmd) : List String :=
   | .memo m => memoIssues m
   | .radioButtons r => if r.selected < r.items.size then [] else ["radio buttons: selection out of range"]
   | .checkBoxes cb => if cb.cursor < cb.items.size then [] else ["check boxes: cursor out of range"]
+  | .fileList l =>
+    (if l.focused < max l.entries.size 1 then [] else ["file list: focus past the last entry"]) ++
+    (if l.top ≤ l.focused then [] else ["file list: focus above the view"])
   | _ => []
 
 def captureWindow? : Capture → Option Nat
@@ -162,6 +186,12 @@ def issues (before : AppState Cmd) (ev : Event) (st : AppState Cmd) : IO (List S
       out := s!"{tag}: smaller than its minimum size: {repr w.bounds}" :: out
     for c in w.controls do
       out := (controlIssues c).map (s!"{tag}: " ++ ·) ++ out
+    -- A file dialog's information pane describes the list's focused entry.
+    if let some (_, l) := FileDialog.list? w then
+      for c in w.controls do
+        if let .fileInfo i := c.kind then
+          unless i.path == l.info.path && i.entry == l.info.entry do
+            out := s!"{tag}: the information pane does not describe the focused entry" :: out
     let dragged := (captureWindow? st.capture == some w.id &&
         match st.capture with | .move .. | .resize .. => true | _ => false) ||
       st.keyDrag.any (·.1 == w.id)
@@ -267,8 +297,47 @@ where genPoint' (st : AppState Cmd) : Rnd Point := do
 def mouse (pos : Point) (button : MouseButton) (action : MouseAction) : Event :=
   .mouse { pos, button, action }
 
+def typed (text : String) : List Event := text.toList.map fun c => .key (.plain (.char c))
+
+/-- A gesture aimed at a file dialog: moving through and searching its list, clicking and
+double-clicking entries and the scroll bar, typing names, paths and wildcards. -/
+def genDialogGesture (w : Window Cmd) (i : Nat) : Rnd (List Event) := do
+  let some c := w.controls[i]? | return []
+  let r := w.boundsOf c
+  let o : Point := w.bounds.origin + ⟨1, 1⟩ + r.origin
+  let entry : Rnd Point := return o + ⟨← rndInt 0 (r.w - 1), ← rndInt 0 (r.h - 2)⟩
+  match ← rnd 0 11 with
+  | 0 | 1 | 2 =>
+    let k ← oneOf #[Key.up, .down, .left, .right, .pageUp, .pageDown, .home, .end, .tab, .enter, .backspace]
+    let mods ← oneOf #[({} : Modifiers), {}, {}, { ctrl := true }, { shift := true }]
+    return [.key ⟨k, mods⟩]
+  | 3 => return [.key (.plain (.char (← oneOf "abfmsdé.".toList.toArray)))]
+  | 4 | 5 =>
+    let p ← entry
+    return [mouse p .left .press, mouse p .left .release]
+  | 6 =>
+    let p ← entry
+    return [mouse p .left .press, mouse p .left .release, mouse p .left .press, mouse p .left .release]
+  | 7 =>
+    let p := o + ⟨← rndInt 0 (r.w - 1), r.h - 1⟩
+    let q := o + ⟨← rndInt (-3) (r.w + 3), r.h - 1⟩
+    return [mouse p .left .press, mouse q .left .drag, mouse q .left .release]
+  | 8 => return [mouse (← entry) .none (← oneOf #[MouseAction.wheelUp, .wheelDown])]
+  | 9 =>
+    -- Drag across and out of the list.
+    let p ← entry
+    let q := o + ⟨← rndInt (-4) (r.w + 4), ← rndInt (-3) (r.h + 3)⟩
+    return [mouse p .left .press, mouse q .left .drag, mouse q .left .release]
+  | _ =>
+    let text ← oneOf #["*.txt", "..", "../", "sub", "sub/deeper/*", "many", "*", "b.lean", "/", "~nope/x",
+      "/tmp/hyper-vision-fuzz", "a.txt", "?.txt;*.md", ""]
+    return [.key ⟨.char 'n', { alt := true }⟩] ++ typed text ++ [.key (.plain .enter)]
+
 /-- A gesture: a click, a drag, a wheel turn, a key press, a resize, … -/
 def genGesture (st : AppState Cmd) : Rnd (List Event) := do
+  match st.desktop.top? >>= fun w => (FileDialog.list? w).map (w, ·.1) with
+  | some (w, i) => if ← chance 60 then return ← genDialogGesture w i
+  | none => if ← chance 8 then return [.key (.plain (.f 2))]
   let n ← rnd 0 99
   if n < 45 then return [.key (← genKey)]
   if n < 57 then
@@ -313,9 +382,15 @@ def showEvent : Event → String
   | .mouse m => s!"mouse {repr m.action} {repr m.button} at ({m.pos.x}, {m.pos.y})"
   | .resize w h => s!"resize {w}x{h}"
 
-/-- Plays `evs` from the initial state; the first violation, if any, with its position. -/
-def replay (evs : Array Event) : IO (Option (Nat × List String)) := do
-  let mut st := initial 80 25
+/-- The state a session starts in: every other session starts with a file dialog open. -/
+def start (session : Nat) : IO (AppState Cmd) := do
+  let st := initial 80 25
+  if session % 2 == 0 then return st
+  return (← ((App.dispatch (.user .openFile)).run app).run st).2
+
+/-- Plays `evs` from `st`; the first violation, if any, with its position. -/
+def replay (st : AppState Cmd) (evs : Array Event) : IO (Option (Nat × List String)) := do
+  let mut st := st
   for h : i in [0:evs.size] do
     let before := st
     st := (← ((App.handleEvent evs[i]).run app).run st).2
@@ -325,9 +400,9 @@ def replay (evs : Array Event) : IO (Option (Nat × List String)) := do
   return none
 
 /-- Removes chunks of events while the failure (same first message) persists. -/
-def shrink (evs : Array Event) (msg : String) : IO (Array Event) := do
+def shrink (st : AppState Cmd) (evs : Array Event) (msg : String) : IO (Array Event) := do
   let fails (xs : Array Event) : IO Bool := do
-    return match ← replay xs with
+    return match ← replay st xs with
       | some (_, e :: _) => e == msg
       | _ => false
   let mut evs := evs
@@ -342,9 +417,11 @@ def shrink (evs : Array Event) (msg : String) : IO (Array Event) := do
 
 /-- Runs `sessions` random sessions of `length` gestures each, from `seed`. -/
 def fuzz (seed sessions length : Nat) : IO Unit := do
+  ensureTree
   for s in [0:sessions] do
     let mut g := mkStdGen (seed + s)
-    let mut st := initial 80 25
+    let st₀ ← start (seed + s)
+    let mut st := st₀
     let mut trace : Array Event := #[]
     for _ in [0:length] do
       let (evs, g') := (genGesture st).run g
@@ -356,7 +433,7 @@ def fuzz (seed sessions length : Nat) : IO Unit := do
         trace := trace.push ev
         let errs ← issues before ev st
         if let e :: _ := errs then
-          let small ← shrink trace e
+          let small ← shrink st₀ trace e
           throw <| IO.userError <| s!"session {seed + s}: {e}\nafter {small.size} events:\n  " ++
             "\n  ".intercalate (small.toList.map showEvent)
 

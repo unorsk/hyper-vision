@@ -1,3 +1,4 @@
 import HyperVisionTests.Unit
 import HyperVisionTests.Properties
 import HyperVisionTests.Fuzz
+import HyperVisionTests.FileDialog

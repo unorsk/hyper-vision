@@ -1,4 +1,5 @@
 import HyperVision.Desktop
+import HyperVision.FileDialog
 import HyperVision.Menu
 import HyperVision.Input
 import HyperVision.Terminal
@@ -217,11 +218,12 @@ def startJob (job : Job α) : AppM α Unit := do
 
 /-- Runs the application's handler for a user command `a` (issued by a control or menu,
 or delivered by a finished job), installs the desktop it returns and starts any jobs it
-spawned. `source` is the id of the window the command came from, if any. -/
-def applyUser (a : α) (source : Option Nat) : AppM α Unit := do
+spawned. `source` is the id of the window the command came from, if any; `window`
+overrides the window passed to the handler (a dialog that has already been closed). -/
+def applyUser (a : α) (source : Option Nat) (window : Option (Window α) := none) : AppM α Unit := do
   let app ← read
   let d := (← get).desktop
-  let h ← app.onCommand a (source.bind d.find?) d
+  let h ← app.onCommand a (window <|> source.bind d.find?) d
   modify fun s => { s with desktop := h.desktop }
   h.jobs.forM startJob
 
@@ -247,6 +249,16 @@ def dispatch (cmd : Command α) (source : Option Nat := none) : AppM α Unit := 
   | .tile => modifyDesktop Desktop.tile
   | .cascade => modifyDesktop Desktop.cascade
   | .menu => modify fun s => { s with menu := some ⟨0, #[]⟩ }
+  | .fileOpen a =>
+    let some id := target | return
+    let some w := d.find? id | return
+    match ← FileDialog.accept w with
+    | .stay w => modifyDesktop (·.modify id fun _ => w)
+    | .chosen w =>
+      -- As with `ok`, the dialog closes; its handler still gets it, to read the path.
+      modifyDesktop (·.close id)
+      applyUser a none (some w)
+    | .invalid msg => modifyDesktop (·.insertCentered (Window.messageBox "Error" s!"^C{msg}"))
   | .user a => applyUser a target
 
 /-- Handles what a window reported back. -/
@@ -609,14 +621,28 @@ def handleMouse (m : MouseEvent) : AppM α Unit := do
     | _, _ => modifyDesktop (·.modify w.id (·.wheel (m.action == .wheelDown)))
   | _ => pure ()
 
-def handleEvent : Event → AppM α Unit
+/-- Forgets a mouse capture, keyboard drag or drop-down list whose window was closed
+meanwhile (by a command, such as a double click that chose a file, or by a finished
+job): like Turbo Vision's tracking loops, the interaction ends with its window. -/
+def pruneStale : AppM α Unit := modify fun s =>
+  let gone (id : Nat) := (s.desktop.find? id).isNone
+  let capture := match s.capture with
+    | .move id _ | .resize id _ | .control id _ | .closeIcon id | .scroll id .. =>
+      if gone id then .none else s.capture
+    | c => c
+  { s with capture, keyDrag := s.keyDrag.filter fun (id, _) => !gone id
+           popup := s.popup.filter fun p => !gone p.window }
+
+def handleEvent (ev : Event) : AppM α Unit := do
+  match ev with
   | .key k => handleKey k
   | .mouse m => handleMouse m
-  | .resize w h => do
+  | .resize w h =>
     dropCapture
     let s : Size := ⟨w, h⟩
     modify fun st => { st with screen := s, menu := none, popup := none }
     modifyDesktop (·.setBounds (desktopRect s))
+  pruneStale
 
 /-! ### Drawing -/
 
@@ -675,6 +701,7 @@ def deliverFinished : AppM α Unit := do
   modify fun s => { s with jobs := pending }
   -- Removing the finished jobs first lets a delivered command spawn new ones cleanly.
   for a in done do applyUser a none
+  pruneStale
 
 /--
 Runs the application until a `quit` command. `windows` are opened in order, so the

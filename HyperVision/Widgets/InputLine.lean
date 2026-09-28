@@ -36,6 +36,10 @@ def selection? (i : InputLine) : Option (Nat × Nat) :=
 
 def selectAll (i : InputLine) : InputLine := { i with anchor := some 0, cursor := i.text.size }
 
+/-- Replaces the text (cut to the maximum length), with the cursor at its end. -/
+def setValue (i : InputLine) (s : String) : InputLine :=
+  ofString (String.ofList (s.toList.take i.maxLength)) i.maxLength
+
 /-- Scrolls so the cursor is visible in a field `width` cells wide. -/
 def adjust (i : InputLine) (width : Nat) : InputLine :=
   let vis := max 1 (width - 2)

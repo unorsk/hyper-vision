@@ -173,4 +173,66 @@ def memoAgrees (ops : List EditOp) : Bool :=
 
 #eval Testable.check (∀ ops : List EditOp, memoAgrees ops = true) cfg
 
+/-! ## File dialogs: wildcards and paths -/
+
+/-- Wildcard matching by dynamic programming over prefixes (independent of `globMatch`):
+`row[j]` tells whether the pattern read so far matches the first `j` characters. -/
+def globRef (p s : List Char) : Bool := Id.run do
+  let s := s.toArray
+  let mut row : Array Bool := (Array.range (s.size + 1)).map (· == 0)
+  for c in p do
+    let mut next : Array Bool := Array.replicate (s.size + 1) false
+    for j in [0:s.size + 1] do
+      let v :=
+        if c == '*' then row[j]! || (j > 0 && next[j - 1]!)
+        else j > 0 && row[j - 1]! && (c == '?' || c == s[j - 1]!)
+      next := next.set! j v
+    row := next
+  return row[s.size]!
+
+/-- A pattern and a name over a small alphabet, so that matches are frequent. -/
+structure GlobCase where
+  pat : List Char
+  name : List Char
+deriving Repr
+
+instance : Arbitrary GlobCase := ⟨do
+  let pat ← (List.range (← natIn 0 7)).mapM fun _ => pick #['a', 'b', '.', '*', '?']
+  let name ← (List.range (← natIn 0 9)).mapM fun _ => pick #['a', 'b', '.']
+  pure ⟨pat, name⟩⟩
+instance : Shrinkable GlobCase := {}
+
+-- Wildcard matching agrees with the dynamic-programming matcher.
+#eval Testable.check (∀ g : GlobCase, globMatch g.pat g.name = globRef g.pat g.name) cfg
+
+/-- A path made of awkward components. -/
+structure PathCase where
+  path : String
+deriving Repr
+
+instance : Arbitrary PathCase := ⟨do
+  let comps ← (List.range (← natIn 0 7)).mapM fun _ => pick #["a", "b", ".", "..", "", "c.d", "é 中"]
+  pure ⟨(if ← genBool then "/" else "") ++ "/".intercalate comps⟩⟩
+instance : Shrinkable PathCase := {}
+
+/-- Components of a normalized path: none empty, `.` or `..`. -/
+def cleanPath (p : String) : Bool :=
+  p == "/" || (p.startsWith "/" && ((p.splitOn "/").drop 1).all fun c => !c.isEmpty && c != "." && c != "..")
+
+-- Normalizing gives an absolute path without empty, `.` or `..` components, and is idempotent.
+#eval Testable.check (∀ p : PathCase,
+  cleanPath (FileDialog.normalize p.path) &&
+    FileDialog.normalize (FileDialog.normalize p.path) == FileDialog.normalize p.path) cfg
+
+-- Splitting a normalized path and joining it again gives the path back.
+#eval Testable.check (∀ p : PathCase,
+  let n := FileDialog.normalize p.path
+  let (dir, last) := FileDialog.splitLast n
+  n == "/" || FileDialog.normalize (joinPath dir last) == n) cfg
+
+-- An absolute name ignores the directory; a relative one is resolved inside it.
+#eval Testable.check (∀ p q : PathCase,
+  FileDialog.resolve (FileDialog.normalize q.path) ("/" ++ p.path) == FileDialog.normalize ("/" ++ p.path) &&
+  FileDialog.resolve "/base" ("x/" ++ p.path) == FileDialog.normalize ("/base/x/" ++ p.path)) cfg
+
 end HyperVisionTests

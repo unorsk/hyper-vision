@@ -64,6 +64,8 @@ structure DialogColors where
   listFocused : Attr
   listSelected : Attr
   listDivider : Attr
+  /-- The information pane of file dialogs. -/
+  infoPane : Attr
 deriving Repr, Inhabited
 
 /-- Colors of the drop-down list opened from a combo box (Turbo Vision's history window). -/
@@ -126,7 +128,8 @@ def turboVision : Theme where
       clusterDisabled := a 0x38
       input := a 0x1F, inputSelection := a 0x2F, inputArrows := a 0x1A
       historyArrow := a 0x20, historySides := a 0x72
-      listNormal := a 0x30, listFocused := a 0x2F, listSelected := a 0x3E, listDivider := a 0x31 }
+      listNormal := a 0x30, listFocused := a 0x2F, listSelected := a 0x3E, listDivider := a 0x31
+      infoPane := a 0x13 }
   popup :=
     { frame := a 0x1F, icon := a 0x1A, item := a 0x1F, focused := a 0x2F
       scrollPage := a 0x31, scrollControls := a 0x72 }

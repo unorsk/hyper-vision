@@ -231,6 +231,27 @@ def cursorPos? (w : Window α) : Option Point := do
 
 /-! ### Events -/
 
+/-- The default button's command, if there is an enabled default button. -/
+def defaultCommand? (w : Window α) : Option (Command α) :=
+  w.controls.findSome? fun c => match c.kind with
+    | .button b => if b.isDefault && b.enabled then some b.command else none
+    | _ => none
+
+/-- Updates the controls that show control `i`'s value after it changed: a file list
+shows its focused entry in its file name field (unless that is being edited, as with
+`TFileInputLine`) and in the window's information panes (Turbo Vision's `cmFileFocused`
+broadcast). -/
+def changed (w : Window α) (i : Nat) : Window α :=
+  match w.controls[i]? with
+  | some { kind := .fileList l, .. } =>
+    { w with controls := w.controls.mapIdx fun j c => match c.kind with
+      | .inputLine inp =>
+        if c.name == l.field && w.focus != some j then { c with kind := .inputLine (inp.setValue l.fieldText) }
+        else c
+      | .fileInfo _ => { c with kind := .fileInfo l.info }
+      | _ => c }
+  | _ => w
+
 /-- Translates a control's reply into a window reply. -/
 def applyReply (w : Window α) (i : Nat) (r : Reply) : Window α × WindowReply α :=
   match r with
@@ -239,7 +260,13 @@ def applyReply (w : Window α) (i : Nat) (r : Reply) : Window α × WindowReply 
   | .activated =>
     match w.controls[i]? with
     | some { kind := .button b, .. } => (w, .command b.command)
-    | _ => (w, .handled)
+    -- Activating anything else (double-clicking a list entry) presses the default button,
+    -- after showing the (possibly newly focused) entry, which is what the button acts on.
+    | _ =>
+      let w := w.changed i
+      match w.defaultCommand? with
+      | some cmd => (w, .command cmd)
+      | none => (w, .handled)
   | .focus name =>
     match w.controlIndex? name with
     | some j => (w.setFocus j, .handled)
@@ -247,6 +274,7 @@ def applyReply (w : Window α) (i : Nat) (r : Reply) : Window α × WindowReply 
   | .dropDown anchor items current =>
     let origin := (w.controls[i]?.map (w.boundsOf · |>.origin)).getD Point.origin
     (w, .dropDown i (anchor.translate (origin + ⟨1, 1⟩)) items current)
+  | .changed => (w.changed i, .handled)
 
 /-- Replaces the kind (widget state) of control `i`. -/
 def updateKind (w : Window α) (i : Nat) (k : ControlKind α) : Window α :=
@@ -258,12 +286,6 @@ def dispatchHotkey (w : Window α) (ch : Char) : Option (Window α × WindowRepl
     let c ← w.controls[i]?
     let (k, r) ← c.kind.hotkey ch
     pure ((updateKind w i k).setFocus i |>.applyReply i r)
-
-/-- The default button's command, if there is an enabled default button. -/
-def defaultCommand? (w : Window α) : Option (Command α) :=
-  w.controls.findSome? fun c => match c.kind with
-    | .button b => if b.isDefault && b.enabled then some b.command else none
-    | _ => none
 
 /-- Offers a key to the focused control. -/
 def keyToFocus (w : Window α) (k : KeyEvent) : Window α × WindowReply α :=
