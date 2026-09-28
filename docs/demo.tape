@@ -15,4 +15,4 @@ Type "clear && python3 scripts/drive.py --hold"
 Enter
 Sleep 0.5s
 Show
-Sleep 49s
+Sleep 57s
