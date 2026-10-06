@@ -4,9 +4,6 @@ open System Lake DSL
 package «hyper-vision» where
   version := v!"0.1.0"
   leanOptions := #[⟨`autoImplicit, false⟩]
-  testDriver := "tests"
-
-require plausible from git "https://github.com/leanprover-community/plausible" @ "v4.34.0"
 
 input_file hv_term.c where
   path := "c" / "hv_term.c"
@@ -25,12 +22,17 @@ target libhvterm pkg : FilePath := do
 lean_lib HyperVision where
   moreLinkObjs := #[libhvterm]
 
-/-- Unit and property tests (checked at compile time) and the application fuzzer. -/
-lean_lib HyperVisionTests
-
-/-- `lake test [-- seed sessions length]`: builds the tests, then fuzzes the application. -/
-lean_exe tests where
-  root := `HyperVisionTests.Main
+/-- `lake test [-- seed sessions length]` runs the tests in `tests/`. They live in their own
+package, so that depending on `hyper-vision` does not pull in test-only tools (Plausible). -/
+@[test_driver]
+script tests (args) do
+  let pkg ← getRootPackage
+  let child ← IO.Process.spawn {
+    cmd := "lake"
+    args := #["test", "--"] ++ args.toArray
+    cwd := pkg.dir / "tests"
+  }
+  child.wait
 
 @[default_target]
 lean_exe «hyper-vision-demo» where
