@@ -285,4 +285,30 @@ def has (st : AppState JCmd) (title : String) : Bool := st.desktop.windows.any (
 
 end Jobs
 
+/-! ## List boxes -/
+
+section ListBoxes
+
+private def fruits : ListBox := { items := #["apple", "banana", "cherry", "damson", "elder"] }
+private def small : Size := ⟨20, 3⟩
+
+-- Down and End move the focus; the list scrolls so the focus stays visible.
+#guard (fruits.handleKey small (KeyEvent.plain .down)).1.focused == 1
+#guard (fruits.handleKey small (KeyEvent.plain .end)).1.focused == 4
+#guard (fruits.handleKey small (KeyEvent.plain .end)).1.top == 2
+-- Up at the top stays put; Space activates; Enter is left to the window's default button.
+#guard (fruits.handleKey small (KeyEvent.plain .up)).1.focused == 0
+#guard (fruits.handleKey small (KeyEvent.plain (.char ' '))).2 == .activated
+#guard (fruits.handleKey small (KeyEvent.plain .enter)).2 == .ignored
+-- Plain letters are not text for a list box, so they stay hot keys of the dialog.
+#guard (fruits.handleKey small (KeyEvent.plain (.char 'b'))).2 == .ignored
+-- A click focuses the row under the mouse; a double click activates it.
+#guard (fruits.handleMouse small { pos := ⟨3, 2⟩, button := .left, action := .press }).1.focused == 2
+#guard (fruits.handleMouse small { pos := ⟨3, 1⟩, button := .left, action := .press, double := true }).2 == .activated
+-- New items keep the focus within the list.
+#guard ({ fruits with focused := 4 }.setItems #["x", "y"]).focused == 1
+#guard ({ fruits with focused := 4 }.setItems #[]).focused? == none
+
+end ListBoxes
+
 end HyperVisionTests

@@ -14,6 +14,7 @@ import HyperVision.Widgets.InputLine
 import HyperVision.Widgets.ComboBox
 import HyperVision.Widgets.Memo
 import HyperVision.Widgets.FileList
+import HyperVision.Widgets.ListBox
 import HyperVision.Control
 import HyperVision.Window
 import HyperVision.Menu
@@ -30,3 +31,4 @@ import HyperVision.Proofs.Window
 import HyperVision.Proofs.Menu
 import HyperVision.Proofs.Input
 import HyperVision.Proofs.FileList
+import HyperVision.Proofs.ListBox

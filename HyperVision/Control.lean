@@ -5,6 +5,7 @@ import HyperVision.Widgets.InputLine
 import HyperVision.Widgets.ComboBox
 import HyperVision.Widgets.Memo
 import HyperVision.Widgets.FileList
+import HyperVision.Widgets.ListBox
 
 /-!
 # Controls
@@ -27,6 +28,7 @@ inductive ControlKind (α : Type) where
   | memo (w : Memo)
   | fileList (w : FileList)
   | fileInfo (w : FileInfo)
+  | listBox (w : ListBox)
 deriving Inhabited
 
 namespace ControlKind
@@ -47,6 +49,7 @@ variable {α β : Type}
   | memo w => f w memo
   | fileList w => f w fileList
   | fileInfo w => f w fileInfo
+  | listBox w => f w listBox
 
 def draw (k : ControlKind α) (ctx : DrawCtx) : DrawM Unit :=
   k.withWidget fun w _ => Widget.draw w ctx
@@ -128,8 +131,10 @@ def size (c : Control α) : Size := ⟨c.bounds.w, c.bounds.h⟩
 def label (x y : Int) (text : String) (link : Option String := none) : Control α :=
   { bounds := ⟨x, y, (HotText.parse text).width + 2, 1⟩, kind := .label { text, link } }
 
-def staticText (bounds : Rect) (text : String) (grow : GrowMode := {}) : Control α :=
-  { bounds, grow, kind := .staticText { text } }
+/-- Read-only text, in the dialog's static text colors unless `attr` is given. -/
+def staticText (bounds : Rect) (text : String) (grow : GrowMode := {}) (attr : Option Attr := none) :
+    Control α :=
+  { bounds, grow, kind := .staticText { text, attr } }
 
 def button (x y : Int) (w : Nat) (title : String) (cmd : Command α) (isDefault : Bool := false)
     (grow : GrowMode := {}) : Control α :=
@@ -162,6 +167,10 @@ def fileList (name : String) (bounds : Rect) (list : FileList) (grow : GrowMode 
 def fileInfo (bounds : Rect) (grow : GrowMode := {}) : Control α :=
   { bounds, grow, kind := .fileInfo {} }
 
+def listBox (name : String) (bounds : Rect) (items : Array String) (focused : Nat := 0)
+    (grow : GrowMode := {}) : Control α :=
+  { name, bounds, grow, kind := .listBox { items, focused := min focused (items.size - 1) } }
+
 /-! ### Reading values -/
 
 /-- The text of an input line, combo box or memo. -/
@@ -178,11 +187,33 @@ def checked? (c : Control α) : Option (Array Bool) :=
   | .checkBoxes cb => some cb.values
   | _ => none
 
+/-- The focused item of a list box, unless it is empty. -/
+def listFocused? (c : Control α) : Option Nat :=
+  match c.kind with
+  | .listBox l => l.focused?
+  | _ => none
+
 /-- The selected index of a group of radio buttons. -/
 def selected? (c : Control α) : Option Nat :=
   match c.kind with
   | .radioButtons rb => some rb.selected
   | _ => none
+
+/-! ### Updating values -/
+
+/-- Replaces the text of an input line, memo or static text; other controls are unchanged. -/
+def setText (c : Control α) (text : String) : Control α :=
+  match c.kind with
+  | .inputLine i => { c with kind := .inputLine (i.setValue text) }
+  | .memo m => { c with kind := .memo { Memo.ofString text with scrollBar := m.scrollBar, acceptsTab := m.acceptsTab } }
+  | .staticText t => { c with kind := .staticText { t with text } }
+  | _ => c
+
+/-- Replaces the items of a list box (see `ListBox.setItems`); other controls are unchanged. -/
+def setListItems (c : Control α) (items : Array String) : Control α :=
+  match c.kind with
+  | .listBox l => { c with kind := .listBox (l.setItems items) }
+  | _ => c
 
 end Control
 

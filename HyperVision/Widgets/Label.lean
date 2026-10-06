@@ -30,6 +30,8 @@ instance : Widget Label where
 /-- Read-only text. Lines starting with `^C` are centered. -/
 structure StaticText where
   text : String
+  /-- Overrides the dialog's static text colors (to highlight a message). -/
+  attr : Option Attr := none
 deriving Inhabited
 
 namespace StaticText
@@ -49,7 +51,7 @@ end StaticText
 
 instance : Widget StaticText where
   draw t ctx := do
-    let attr := ctx.theme.dialog.staticText
+    let attr := t.attr.getD ctx.theme.dialog.staticText
     Draw.fill ⟨0, 0, ctx.size.w, ctx.size.h⟩ ' ' attr
     let mut y : Nat := 0
     for para in t.text.splitOn "\n" do
