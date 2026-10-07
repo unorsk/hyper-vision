@@ -311,4 +311,156 @@ private def small : Size := ⟨20, 3⟩
 
 end ListBoxes
 
+/-! ## Text views -/
+
+section TextViews
+
+private def doc : Array TextPara := #[
+  { spans := #[{ text := "set" }, { text := "1", attr := some (Attr.ofByte 0x1E) }] },
+  { spans := #[{ text := "1 " }, { text := "put or lay something somewhere" }], indent := 4, hang := 2 },
+  { spans := #[{ text := "see " }, { text := "place", link := some "place" }, { text := " and " },
+      { text := "put", link := some "put" }, { text := "down", link := some "put" }], gapBefore := true }]
+private def view : TextView := TextView.ofParas doc
+private def tiny : Size := ⟨17, 3⟩
+
+-- Wrapping: the hanging indent puts the first line two columns left of the rest, and
+-- styled spans inside a word stay together.
+#guard (wrapParas doc 16).map (fun l => (l.indent, l.pieces.foldl (· ++ ·.text) "")) ==
+  #[(0, "set1"), (2, "1 put or lay"), (4, "something"), (4, "somewhere"), (0, ""), (0, "see place and"),
+    (0, "putdown")]
+-- Adjacent spans with the same target are one link.
+#guard view.linkCount == 2
+#guard TextPara.linkTargets doc == #["place", "put"]
+-- Scrolling stops at the last line.
+#guard (view.handleKey tiny (KeyEvent.plain .end)).1.top == 4
+#guard ((view.handleKey tiny (KeyEvent.plain .end)).1.handleKey tiny (KeyEvent.plain .down)).1.top == 4
+-- `Right` highlights the first link (scrolling to it); `Enter` activates it.
+#guard let v := (view.handleKey tiny (KeyEvent.plain .right)).1; v.linkTarget? == some "place" && v.top == 3
+#guard ((view.handleKey tiny (KeyEvent.plain .right)).1.handleKey tiny (KeyEvent.plain .enter)).2 == .activated
+#guard (view.handleKey tiny (KeyEvent.plain .enter)).2 == .ignored
+-- A click on a link activates it.
+#guard
+  let v := (view.handleKey tiny (KeyEvent.plain .end)).1
+  let (v, r) := v.handleMouse tiny { pos := ⟨1, 2⟩, button := .left, action := .press }
+  r == .activated && v.linkTarget? == some "put"
+
+-- Scrolling to a paragraph puts its first line (after its blank line) at the top, as
+-- far as the end of the text allows.
+#guard view.paraLine tiny 2 == 5
+#guard (view.scrollToPara tiny 2).top == 4
+#guard (view.scrollToPara ⟨17, 2⟩ 2).top == 5
+-- Appended text keeps the scroll position.
+#guard
+  let v := (view.handleKey tiny (KeyEvent.plain .down)).1
+  (v.appendParas #[{ spans := #[{ text := "more" }] }]).top == v.top
+-- In a narrow view deep indentation shrinks, but unindented text stays unindented.
+#guard (wrapParas #[{ spans := #[{ text := "abc" }] }] 6).map (·.indent) == #[0]
+#guard (wrapParas #[{ spans := #[{ text := "abc" }], indent := 8 }] 12).map (·.indent) == #[4]
+
+end TextViews
+
+/-! ## Drop-down lists -/
+
+section DropDowns
+
+private def sizes : ComboBox := ComboBox.ofItems #["small", "medium", "large", "larger"] "medium" (editable := false)
+private def field : Size := ⟨12, 1⟩
+
+-- Typing a letter chooses the next item starting with it; nothing is typed in.
+#guard ((sizes.handleKey field (KeyEvent.plain (.char 'l'))).1.value) == "large"
+#guard (((sizes.handleKey field (KeyEvent.plain (.char 'l'))).1.handleKey field (KeyEvent.plain (.char 'l'))).1.value) == "larger"
+#guard (sizes.handleKey field (KeyEvent.plain (.char 'l'))).2 == .changed
+#guard (sizes.handleKey field (KeyEvent.plain (.char 'q'))).1.value == "medium"
+-- Space opens the list; editing keys do nothing.
+#guard match (sizes.handleKey field (KeyEvent.plain (.char ' '))).2 with | .dropDown .. => true | _ => false
+#guard (sizes.handleKey field (KeyEvent.plain .backspace)).1.value == "medium"
+#guard !(Widget.wantsText sizes) && (Widget.cursor? sizes field).isNone
+
+end DropDowns
+
+/-! ## Keys nobody handled -/
+
+section KeyCommands
+
+-- A key the window ignores reaches the application's `keyCommand`; one it handles does not.
+#eval show IO Unit from do
+  let seen ← IO.mkRef ([] : List String)
+  let onCommand (s : String) (_ : Option (Window String)) (d : Desktop String) : IO (Handled String) := do
+    seen.modify (s :: ·)
+    return d
+  let keyCommand (k : KeyEvent) : Option (Command String) :=
+    match k.key with
+    | .down => some (.user "down")
+    | .char c => some (.user (String.singleton c))
+    | _ => none
+  let app : App String := { menuBar := #[], statusLine := #[], onCommand, keyCommand }
+  let w : Window String := { (Window.new "W" ⟨0, 1, 40, 10⟩ : Window String) with
+    controls := #[Control.inputLine "q" 0 0 20 ""] }
+  let d := ({ bounds := ⟨0, 1, 80, 23⟩ } : Desktop String).insert w
+  let st : AppState String := { desktop := d, screen := ⟨80, 25⟩ }
+  let run (st : AppState String) (k : Key) : IO (AppState String) :=
+    return (← ((App.handleEvent (.key (.plain k))).run app).run st).2
+  let st ← run st .down        -- the input line ignores Down
+  let st ← run st (.char 'x')  -- the input line takes the letter
+  unless (← seen.get) == ["down"] do throw (IO.userError s!"keyCommand saw {← seen.get}")
+  -- Not while a modal window is open.
+  let st := { st with desktop := st.desktop.insertCentered (Window.messageBox "M" "modal") }
+  let _ ← run st .down
+  unless (← seen.get) == ["down"] do throw (IO.userError "keyCommand reached past a modal window")
+
+end KeyCommands
+
+/-! ## Change and activation commands -/
+
+section Commands
+
+private def finder : Window String :=
+  Window.dialog "Find" ⟨0, 0, 40, 12⟩ #[
+    { (Control.inputLine "q" 1 1 20 "ab" : Control String) with onChange := some (.user "typed") },
+    { (Control.listBox "hits" ⟨1, 3, 20, 4⟩ #["a", "b", "c"] : Control String) with
+      onChange := some (.user "moved"), onActivate := some (.user "chosen") },
+    Control.button 1 8 10 "~O~K" .ok (isDefault := true)]
+
+private def isCmd (r : WindowReply String) (c : String) : Bool :=
+  match r with
+  | .command (.user c') => c == c'
+  | _ => false
+
+-- Typing reports a change; moving the cursor does not.
+#guard isCmd (finder.handleKey (.plain (.char 'x'))).2 "typed"
+#guard match (finder.handleKey (.plain .left)).2 with | .handled => true | _ => false
+#guard (InputLine.ofString "ab" |>.handleKey ⟨20, 1⟩ (.plain .backspace)).2 == .changed
+#guard (InputLine.ofString "ab" |>.handleKey ⟨20, 1⟩ (.plain .home)).2 == .handled
+-- A list box with its own commands issues them instead of pressing the default button.
+#guard isCmd ((finder.focusNext).handleKey (.plain .down)).2 "moved"
+#guard isCmd ((finder.focusNext).handleKey (.plain (.char ' '))).2 "chosen"
+-- Without an `onActivate`, activation still presses the default button.
+#guard
+  let w : Window String := Window.dialog "L" ⟨0, 0, 30, 10⟩ #[
+    Control.listBox "l" ⟨1, 1, 20, 4⟩ #["a", "b"], Control.button 1 6 10 "OK" (.user "ok") (isDefault := true)]
+  isCmd (w.handleKey (.plain (.char ' '))).2 "ok"
+
+-- Choosing from a combo box's drop-down list issues its `onChange` command.
+#eval show IO Unit from do
+  let changes ← IO.mkRef 0
+  let w : Window Unit := Window.dialog "C" ⟨0, 0, 40, 10⟩ #[
+    { (Control.comboBox "c" 1 1 20 #["one", "two", "three"] "one" : Control Unit) with
+      onChange := some (.user ()) }]
+  let onCommand (_ : Unit) (_ : Option (Window Unit)) (d : Desktop Unit) : IO (Handled Unit) := do
+    changes.modify (· + 1)
+    return d
+  let app : App Unit := { menuBar := #[], statusLine := #[], onCommand }
+  let d := ({ bounds := ⟨0, 1, 80, 23⟩ } : Desktop Unit).insert w
+  let st : AppState Unit := { desktop := d, screen := ⟨80, 25⟩ }
+  let run (st : AppState Unit) (k : Key) : IO (AppState Unit) :=
+    return (← ((App.handleEvent (.key (.plain k))).run app).run st).2
+  let st ← run st .down   -- open the list
+  let st ← run st .down   -- highlight "two"
+  let st ← run st .enter  -- choose it
+  let value := (st.desktop.top? >>= (·.control? "c") >>= (·.text?))
+  unless value == some "two" do throw (IO.userError s!"combo box holds {value}")
+  unless (← changes.get) == 1 do throw (IO.userError "choosing did not issue the change command")
+
+end Commands
+
 end HyperVisionTests

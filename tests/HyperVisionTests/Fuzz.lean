@@ -34,6 +34,8 @@ inductive Cmd where
   | newEditor | openControls | about | showValues
   | insert (text : String)
   | openFile | fileChosen
+  /-- The help window: its search field changed, or a link in its text was followed. -/
+  | helpTyped | helpFollow
 deriving BEq, Inhabited
 
 def controlsDialog : Window Cmd :=
@@ -51,6 +53,30 @@ def controlsDialog : Window Cmd :=
     Control.memo "notes" ⟨2, 11, 44, 4⟩ "A memo.\n  Indented\n\nwide 中文 and é\nfive\nsix\nseven",
     Control.button 10 16 12 "~O~K" (.user .showValues) (isDefault := true),
     Control.button 25 16 12 "Cancel" .cancel ]
+
+/-- A help text whose links lead to topics with more links; `filter` keeps the
+paragraphs mentioning it (like a search field narrowing a document). -/
+def helpText (topic : String) (filter : String := "") : Array TextPara :=
+  let paras : Array TextPara := #[
+    { spans := #[{ text := s!"Topic {topic}", attr := some (Attr.ofByte 0x1F) }] },
+    { spans := #[{ text := "See " }, { text := "windows", link := some "windows" }, { text := ", " },
+        { text := "menus", link := some "menus" }, { text := " and " },
+        { text := "a link whose words wrap across lines", link := some "long" }, { text := "." }],
+      indent := 2, hang := 2, gapBefore := true },
+    { spans := #[{ text := "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod " ++
+        "tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam." }], indent := 4 },
+    { spans := #[{ text := "wide 中文 and combining e\u0301 and averyveryverylongwordthatmustbebroken" }] },
+    { spans := #[{ text := "back", link := some "start" }], gapBefore := true }]
+  if filter.isEmpty then paras
+  else paras.filter fun p => p.spans.any fun sp => (sp.text.splitOn filter).length > 1
+
+def helpWindow : Window Cmd :=
+  { (Window.new "Help" ⟨10, 4, 44, 14⟩ : Window Cmd) with
+    controls := #[
+      { name := "find", bounds := ⟨1, 0, 40, 1⟩, grow := .stretchX, kind := .inputLine (InputLine.ofString ""),
+        onChange := some (.user .helpTyped) },
+      { (Control.textView "text" ⟨0, 1, 42, 11⟩ (helpText "start") .stretch : Control Cmd) with
+        onActivate := some (.user .helpFollow) }] }
 
 def menuBar : Array (Menu Cmd) := #[
   Menu.new "~≡~" #[
@@ -125,6 +151,16 @@ def onCommand (root : String) (cmd : Cmd) (source : Option (Window Cmd)) (d : De
         | .memo m => { c with kind := .memo (m.insertText text) }
         | _ => c
     | none => d
+  | .helpTyped =>
+    match source with
+    | some w =>
+      let filter := ((w.control? "find").bind (·.text?)).getD ""
+      d.modify w.id fun w => w.setTextView "text" (helpText "start" filter)
+    | none => d
+  | .helpFollow =>
+    match source.bind (·.control? "text") |>.bind (·.linkTarget?), source with
+    | some topic, some w => d.modify w.id fun w => w.setTextView "text" (helpText topic)
+    | _, _ => d
   | .openFile | .fileChosen => d
   return d'
 
@@ -134,7 +170,7 @@ def app (root : String) : App Cmd := { menuBar, statusLine, onCommand := onComma
 def initial (w h : Nat) : AppState Cmd :=
   let screen : Size := ⟨w, h⟩
   let windows := #[Window.editorWindow "Hello" ⟨1, 2, 46, 16⟩ "def main : IO Unit :=\n  pure ()\n",
-    controlsDialog]
+    controlsDialog, helpWindow]
   { desktop := windows.foldl Desktop.insert ({ bounds := App.desktopRect screen } : Desktop Cmd), screen }
 
 /-! ## Invariants -/
@@ -151,8 +187,19 @@ def memoIssues (m : Memo) : List String :=
   (if onText m.cursor then [] else ["memo: cursor off the text"]) ++
   (if m.anchor.all onText then [] else ["memo: selection anchor off the text"])
 
-def controlIssues (c : Control Cmd) : List String :=
+def textViewIssues (v : TextView) (s : Size) : List String :=
+  -- A resize may leave the view past its end until it is drawn or handles an event,
+  -- both of which start from the adjusted view.
+  (if (v.adjust s).top ≤ v.maxTop s then [] else ["text view: scrolled past the end"]) ++
+  (if v.link.all (· < v.linkCount) then [] else ["text view: highlighted link does not exist"]) ++
+  (match v.wrapped with
+    | some (w, ls) => if ls == wrapParas v.paras w then [] else ["text view: stale wrapping cache"]
+    | none => []) ++
+  (if (v.lines s).all (·.width ≤ max (v.textWidth s) 1 + 1) then [] else ["text view: line wider than the view"])
+
+def controlIssues (c : Control Cmd) (s : Size) : List String :=
   match c.kind with
+  | .textView v => textViewIssues v s
   | .inputLine i => inputLineIssues i
   | .comboBox cb => inputLineIssues cb.input
   | .memo m => memoIssues m
@@ -186,7 +233,7 @@ def issues (app : App Cmd) (before : AppState Cmd) (ev : Event) (st : AppState C
     unless (w.minSize.w ≤ w.bounds.w && w.minSize.h ≤ w.bounds.h) || w.isMaximized desk do
       out := s!"{tag}: smaller than its minimum size: {repr w.bounds}" :: out
     for c in w.controls do
-      out := (controlIssues c).map (s!"{tag}: " ++ ·) ++ out
+      out := (controlIssues c (w.sizeOf c)).map (s!"{tag}: " ++ ·) ++ out
     -- A file dialog's information pane describes the list's focused entry.
     if let some (_, l) := FileDialog.list? w then
       for c in w.controls do

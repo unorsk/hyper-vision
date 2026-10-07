@@ -161,6 +161,11 @@ structure App (α : Type) where
   onTick : Nat → Desktop α → Desktop α := fun _ d => d
   /-- Draw a DOS-style block mouse cursor (handy for screen recordings). -/
   mouseCursor : Bool := false
+  /-- A command for a key that nothing handled — not the status line, the menus, the
+  focused control or its window (Turbo Vision passes such keys on to the application
+  too). The command is issued from the active window, which `onCommand` receives;
+  while that window is modal, keys never reach the application. -/
+  keyCommand : KeyEvent → Option (Command α) := fun _ => none
 
 /-- A `Job` that has been started: the task computing its (success-or-failure) result
 off the loop, and how to turn a failure into a command. -/
@@ -370,10 +375,15 @@ def menuMouse (t : MenuTrack) (m : MouseEvent) : AppM α Unit := do
 
 def choosePopup (p : Popup) : AppM α Unit := do
   modify fun s => { s with popup := none }
+  let before := ((← get).desktop.find? p.window).bind (·.controls[p.control]?) |>.bind (·.text?)
   modifyDesktop fun d => d.modify p.window fun w =>
     { w with controls := w.controls.modify p.control fun c => match c.kind with
       | .comboBox cb => { c with kind := .comboBox (cb.choose p.current) }
       | _ => c }
+  -- A choice that changes the value is a change like any other.
+  let some c := ((← get).desktop.find? p.window).bind (·.controls[p.control]?) | return
+  if let some cmd := c.onChange then
+    if c.text? != before then dispatch cmd (some p.window)
 
 /-- Handles navigation keys in an open drop-down list; returns `false` for other keys. -/
 def popupKey (p : Popup) (k : KeyEvent) : AppM α Bool := do
@@ -494,7 +504,14 @@ def handleKey (k : KeyEvent) : AppM α Unit := do
   else if k == KeyEvent.plain (.f 10) && !modal then openMenu 0 false
   else if let some cmd := menuCmd then dispatch cmd
   else if let some n := windowNum then modifyDesktop (·.selectNumber n)
-  else if let some w := st.desktop.top? then withWindow w.id (·.handleKey k)
+  else if let some w := st.desktop.top? then
+    let (w', r) := w.handleKey k
+    modifyDesktop fun d => d.modify w.id fun _ => w'
+    match r, app.keyCommand k with
+    -- A modal window keeps its keys from the rest of the application.
+    | .ignored, some cmd => if !w.modal then dispatch cmd (some w.id)
+    | r, _ => windowReply w.id r
+  else if let some cmd := app.keyCommand k then dispatch cmd
 
 /-! ### Mouse -/
 

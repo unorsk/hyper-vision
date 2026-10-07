@@ -106,7 +106,7 @@ theorem Valid.handleKey {i : InputLine} (h : i.Valid) (s : Size) (k : KeyEvent) 
   unfold InputLine.handleKey
   have hmap : ∀ o : Option InputLine, (∀ j ∈ o, j.Valid) →
       (match o with
-        | some i' => (i'.adjust s.w, Reply.handled)
+        | some i' => (i'.adjust s.w, if i'.text == i.text then Reply.handled else Reply.changed)
         | none => (i, Reply.ignored)).1.Valid := by
     intro o ho
     cases o with
@@ -166,7 +166,7 @@ theorem maxLength_handleKey (i : InputLine) (s : Size) (k : KeyEvent) :
   unfold InputLine.handleKey
   have hmap : ∀ o : Option InputLine, (∀ j ∈ o, j.maxLength = i.maxLength) →
       (match o with
-        | some i' => (i'.adjust s.w, Reply.handled)
+        | some i' => (i'.adjust s.w, if i'.text == i.text then Reply.handled else Reply.changed)
         | none => (i, Reply.ignored)).1.maxLength = i.maxLength := by
     intro o ho
     cases o with

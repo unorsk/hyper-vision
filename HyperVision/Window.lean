@@ -260,8 +260,10 @@ def applyReply (w : Window α) (i : Nat) (r : Reply) : Window α × WindowReply 
   | .activated =>
     match w.controls[i]? with
     | some { kind := .button b, .. } => (w, .command b.command)
-    -- Activating anything else (double-clicking a list entry) presses the default button,
-    -- after showing the (possibly newly focused) entry, which is what the button acts on.
+    -- Activating anything else (double-clicking a list entry) issues the control's own
+    -- command, or else presses the default button, after showing the (possibly newly
+    -- focused) entry, which is what the button acts on.
+    | some { onActivate := some cmd, .. } => (w.changed i, .command cmd)
     | _ =>
       let w := w.changed i
       match w.defaultCommand? with
@@ -274,7 +276,28 @@ def applyReply (w : Window α) (i : Nat) (r : Reply) : Window α × WindowReply 
   | .dropDown anchor items current =>
     let origin := (w.controls[i]?.map (w.boundsOf · |>.origin)).getD Point.origin
     (w, .dropDown i (anchor.translate (origin + ⟨1, 1⟩)) items current)
-  | .changed => (w.changed i, .handled)
+  | .changed =>
+    match w.controls[i]? with
+    | some { onChange := some cmd, .. } => (w.changed i, .command cmd)
+    | _ => (w.changed i, .handled)
+
+/-- Replaces the text of the text view named `name`, wrapped ahead for its current size. -/
+def setTextView (w : Window α) (name : String) (paras : Array TextPara) : Window α :=
+  w.modifyControl name fun c => match c.kind with
+    | .textView v => { c with kind := .textView ((v.setParas paras).layout (w.sizeOf c)) }
+    | _ => c
+
+/-- Appends paragraphs to the text view named `name`, keeping its scroll position. -/
+def appendTextView (w : Window α) (name : String) (paras : Array TextPara) : Window α :=
+  w.modifyControl name fun c => match c.kind with
+    | .textView v => { c with kind := .textView ((v.appendParas paras).layout (w.sizeOf c)) }
+    | _ => c
+
+/-- Scrolls the text view named `name` to its paragraph `i`. -/
+def scrollTextView (w : Window α) (name : String) (i : Nat) : Window α :=
+  w.modifyControl name fun c => match c.kind with
+    | .textView v => { c with kind := .textView (v.scrollToPara (w.sizeOf c) i) }
+    | _ => c
 
 /-- Replaces the kind (widget state) of control `i`. -/
 def updateKind (w : Window α) (i : Nat) (k : ControlKind α) : Window α :=
