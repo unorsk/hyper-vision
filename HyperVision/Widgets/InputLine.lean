@@ -4,7 +4,8 @@ import HyperVision.Widget
 # Single-line input
 
 A `TInputLine`: white on blue, horizontal scrolling with `◄`/`►` indicators,
-shift-selection and mouse selection. The whole text is selected on focus.
+shift-selection and mouse selection. The whole text is selected on focus. Edits that
+change the text are reported with `Reply.changed`.
 -/
 
 namespace HyperVision
@@ -92,7 +93,7 @@ def handleKey (i : InputLine) (s : Size) (k : KeyEvent) : InputLine × Reply :=
       else k.text?.map i.insert
     | _ => k.text?.map i.insert
   match r with
-  | some i' => (i'.adjust s.w, .handled)
+  | some i' => (i'.adjust s.w, if i'.text == i.text then .handled else .changed)
   | none => (i, .ignored)
 
 def handleMouse (i : InputLine) (s : Size) (m : MouseEvent) : InputLine × Reply :=

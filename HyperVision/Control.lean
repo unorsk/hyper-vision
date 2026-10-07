@@ -6,6 +6,7 @@ import HyperVision.Widgets.ComboBox
 import HyperVision.Widgets.Memo
 import HyperVision.Widgets.FileList
 import HyperVision.Widgets.ListBox
+import HyperVision.Widgets.TextView
 
 /-!
 # Controls
@@ -29,6 +30,7 @@ inductive ControlKind (α : Type) where
   | fileList (w : FileList)
   | fileInfo (w : FileInfo)
   | listBox (w : ListBox)
+  | textView (w : TextView)
 deriving Inhabited
 
 namespace ControlKind
@@ -50,6 +52,7 @@ variable {α β : Type}
   | fileList w => f w fileList
   | fileInfo w => f w fileInfo
   | listBox w => f w listBox
+  | textView w => f w textView
 
 def draw (k : ControlKind α) (ctx : DrawCtx) : DrawM Unit :=
   k.withWidget fun w _ => Widget.draw w ctx
@@ -118,6 +121,14 @@ structure Control (α : Type) where
   bounds : Rect
   grow : GrowMode := {}
   kind : ControlKind α
+  /-- Issued when the control's value changes: text typed into an input line or combo
+  box, a choice from a combo box's list, the focus moving in a list box (Turbo Vision
+  broadcasts these). -/
+  onChange : Option (Command α) := none
+  /-- Issued when the control is activated: a list entry double-clicked or chosen with
+  `Space`, a link in a text view followed. Without it, activation presses the window's
+  default button. -/
+  onActivate : Option (Command α) := none
 deriving Inhabited
 
 namespace Control
@@ -153,9 +164,10 @@ def inputLine (name : String) (x y : Int) (w : Nat) (value : String := "")
     (grow : GrowMode := {}) : Control α :=
   { name, bounds := ⟨x, y, w, 1⟩, grow, kind := .inputLine (InputLine.ofString value) }
 
+/-- A combo box; when not `editable`, a drop-down list whose value is one of `items`. -/
 def comboBox (name : String) (x y : Int) (w : Nat) (items : Array String)
-    (value : String := items[0]?.getD "") : Control α :=
-  { name, bounds := ⟨x, y, w, 1⟩, kind := .comboBox (ComboBox.ofItems items value) }
+    (value : String := items[0]?.getD "") (editable := true) : Control α :=
+  { name, bounds := ⟨x, y, w, 1⟩, kind := .comboBox (ComboBox.ofItems items value editable) }
 
 def memo (name : String) (bounds : Rect) (text : String := "") (grow : GrowMode := {})
     (scrollBar := true) : Control α :=
@@ -170,6 +182,11 @@ def fileInfo (bounds : Rect) (grow : GrowMode := {}) : Control α :=
 def listBox (name : String) (bounds : Rect) (items : Array String) (focused : Nat := 0)
     (grow : GrowMode := {}) : Control α :=
   { name, bounds, grow, kind := .listBox { items, focused := min focused (items.size - 1) } }
+
+/-- Read-only formatted text (see `TextView`). -/
+def textView (name : String) (bounds : Rect) (paras : Array TextPara := #[]) (grow : GrowMode := {})
+    (scrollBar := true) : Control α :=
+  { name, bounds, grow, kind := .textView { TextView.ofParas paras with scrollBar } }
 
 /-! ### Reading values -/
 
@@ -193,6 +210,12 @@ def listFocused? (c : Control α) : Option Nat :=
   | .listBox l => l.focused?
   | _ => none
 
+/-- The target of the highlighted link of a text view. -/
+def linkTarget? (c : Control α) : Option String :=
+  match c.kind with
+  | .textView v => v.linkTarget?
+  | _ => none
+
 /-- The selected index of a group of radio buttons. -/
 def selected? (c : Control α) : Option Nat :=
   match c.kind with
@@ -213,6 +236,18 @@ def setText (c : Control α) (text : String) : Control α :=
 def setListItems (c : Control α) (items : Array String) : Control α :=
   match c.kind with
   | .listBox l => { c with kind := .listBox (l.setItems items) }
+  | _ => c
+
+/-- Focuses item `i` of a list box (clamped to the list); other controls are unchanged. -/
+def setListFocus (c : Control α) (i : Nat) : Control α :=
+  match c.kind with
+  | .listBox l => { c with kind := .listBox { l with focused := min i (l.items.size - 1) } }
+  | _ => c
+
+/-- Replaces the text of a text view, scrolled to the top; other controls are unchanged. -/
+def setParas (c : Control α) (paras : Array TextPara) : Control α :=
+  match c.kind with
+  | .textView v => { c with kind := .textView (v.setParas paras) }
   | _ => c
 
 end Control

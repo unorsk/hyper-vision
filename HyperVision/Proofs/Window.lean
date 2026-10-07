@@ -149,13 +149,14 @@ theorem FocusValid.applyReply {w : Window α} (h : w.FocusValid) (i : Nat) (r : 
   · exact h
   · split
     · exact h
+    · exact h.changed i
     · dsimp only
       split <;> exact h.changed i
   · split
     · exact h.setFocus _
     · exact h
   · exact h
-  · exact h.changed i
+  · split <;> exact h.changed i
 
 theorem FocusValid.dispatchHotkey {w : Window α} (h : w.FocusValid) {ch : Char}
     {res : Window α × WindowReply α} (hres : w.dispatchHotkey ch = some res) : res.1.FocusValid := by
